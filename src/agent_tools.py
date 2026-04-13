@@ -1078,6 +1078,35 @@ def default_tool_registry() -> dict[str, AgentTool]:
             },
             handler=_delegate_agent_placeholder,
         ),
+        AgentTool(
+            name='lattice_solve',
+            description=(
+                'Solve an optimization problem using Latti\'s lattice Monte Carlo engine. '
+                'The solver uses discretize → sample → measure decay with auto-compactification, '
+                'parallel tempering, FFT landscape analysis, and gradient polish. '
+                'Input is a natural-language optimization problem or a structured expression. '
+                'Examples: "minimize x0^2 + x1^2 in [-5,5] x [-5,5]", '
+                '"find the minimum of f(x,y) = (x-3)^2 + (y+1)^2 for x in [-10,10], y in [-10,10]". '
+                'Returns the optimal point, value, convergence info, and solver diagnostics.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'problem': {
+                        'type': 'string',
+                        'description': 'The optimization problem in natural language or structured format.',
+                    },
+                    'samples': {
+                        'type': 'integer',
+                        'minimum': 1000,
+                        'maximum': 1000000,
+                        'description': 'Number of Monte Carlo samples (default: 10000).',
+                    },
+                },
+                'required': ['problem'],
+            },
+            handler=_lattice_solve,
+        ),
     ]
     return {tool.name: tool for tool in tools}
 
@@ -1198,9 +1227,83 @@ def _list_dir(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
 
 
 def _read_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    import base64
+    import struct
+
     target = _resolve_path(_require_string(arguments, 'path'), context, allow_missing=False)
     if not target.is_file():
         raise ToolExecutionError(f'Path is not a file: {target}')
+
+    suffix = target.suffix.lower()
+
+    # --- Image handling ---
+    IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+    if suffix in IMAGE_EXTENSIONS:
+        raw = target.read_bytes()
+        b64 = base64.b64encode(raw).decode('ascii')
+        # Best-effort width/height detection without PIL
+        dimensions = ''
+        try:
+            if suffix == '.png' and raw[:8] == b'\x89PNG\r\n\x1a\n':
+                w, h = struct.unpack('>II', raw[16:24])
+                dimensions = f', {w}x{h}'
+            elif suffix in ('.jpg', '.jpeg') and raw[:2] == b'\xff\xd8':
+                # Walk JPEG segments to find SOF marker
+                i = 2
+                while i < len(raw) - 8:
+                    if raw[i] != 0xFF:
+                        break
+                    marker = raw[i + 1]
+                    seg_len = struct.unpack('>H', raw[i + 2:i + 4])[0]
+                    # SOF0-SOF3 (0xC0-0xC3) contain dimensions
+                    if 0xC0 <= marker <= 0xC3:
+                        h, w = struct.unpack('>HH', raw[i + 5:i + 9])
+                        dimensions = f', {w}x{h}'
+                        break
+                    i += 2 + seg_len
+            elif suffix == '.webp' and raw[:4] == b'RIFF' and raw[8:12] == b'WEBP':
+                # VP8 lossy: chunk 'VP8 '
+                if raw[12:16] == b'VP8 ':
+                    w = (struct.unpack('<H', raw[26:28])[0]) & 0x3FFF
+                    h = (struct.unpack('<H', raw[28:30])[0]) & 0x3FFF
+                    dimensions = f', {w}x{h}'
+                # VP8L lossless: chunk 'VP8L'
+                elif raw[12:16] == b'VP8L':
+                    bits = struct.unpack('<I', raw[21:25])[0]
+                    w = (bits & 0x3FFF) + 1
+                    h = ((bits >> 14) & 0x3FFF) + 1
+                    dimensions = f', {w}x{h}'
+        except Exception:
+            pass
+        header = f'[Image: {target.name}{dimensions}, {len(b64)} base64 bytes]\n'
+        return _truncate_output(header + b64, context.max_output_chars)
+
+    # --- PDF handling ---
+    if suffix == '.pdf':
+        # Try pdftotext first (poppler, usually available on macOS via brew or system)
+        try:
+            result = subprocess.run(
+                ['pdftotext', str(target), '-'],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                text = result.stdout.decode('utf-8', errors='replace')
+                return _truncate_output(
+                    f'[PDF: {target.name}, extracted via pdftotext]\n{text}',
+                    context.max_output_chars,
+                )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        # Fallback: extract printable ASCII strings from raw bytes (like `strings`)
+        raw = target.read_bytes()
+        printable = re.findall(rb'[ -~\t\n\r]{4,}', raw)
+        extracted = b'\n'.join(printable).decode('ascii', errors='replace')
+        return _truncate_output(
+            f'[PDF: {target.name}, {len(raw)} bytes — pdftotext unavailable, extracted strings]\n{extracted}',
+            context.max_output_chars,
+        )
+
     text = target.read_text(encoding='utf-8', errors='replace')
     start_line = arguments.get('start_line')
     end_line = arguments.get('end_line')
@@ -2761,6 +2864,23 @@ def _delegate_agent_placeholder(
     raise ToolExecutionError(
         'delegate_agent must be handled by the runtime and is not available as a standalone tool handler'
     )
+
+
+def _lattice_solve(
+    arguments: dict[str, Any],
+    context: ToolExecutionContext,
+) -> str:
+    problem = arguments.get('problem', '')
+    if not isinstance(problem, str) or not problem.strip():
+        raise ToolExecutionError('problem must be a non-empty string')
+
+    samples = arguments.get('samples', 10000)
+    if not isinstance(samples, int):
+        samples = 10000
+    samples = max(1000, min(1000000, samples))
+
+    from .lattice_solver import parse_and_solve
+    return parse_and_solve(problem, samples)
 
 
 def _lsp_query(arguments: dict[str, Any], context: ToolExecutionContext):

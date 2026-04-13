@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from pathlib import Path
 from dataclasses import replace
@@ -463,22 +464,28 @@ def _build_resumed_agent(args: argparse.Namespace) -> tuple[LocalCodingAgent, St
     return agent, stored_session
 
 
-def _print_agent_result(result, *, show_transcript: bool) -> None:
-    print(result.final_output)
-    print('\n# Usage')
-    print(f'total_tokens={result.usage.total_tokens}')
-    print(f'input_tokens={result.usage.input_tokens}')
-    print(f'output_tokens={result.usage.output_tokens}')
-    print(f'total_cost_usd={result.total_cost_usd:.6f}')
-    if result.stop_reason:
-        print(f'stop_reason={result.stop_reason}')
-    if result.session_id:
-        print('\n# Session')
-        print(f'session_id={result.session_id}')
-        if result.session_path:
-            print(f'session_path={result.session_path}')
-    if result.scratchpad_directory:
-        print(f'scratchpad_directory={result.scratchpad_directory}')
+def _print_agent_result(result, *, show_transcript: bool, chat_mode: bool = False) -> None:
+    # If streaming was active, tokens were already printed live — just add a newline
+    streamed = any(e.get('type') == 'content_delta' for e in result.events)
+    if streamed:
+        print()  # newline after streamed output
+    else:
+        print(result.final_output)
+    if not chat_mode:
+        print('\n# Usage')
+        print(f'total_tokens={result.usage.total_tokens}')
+        print(f'input_tokens={result.usage.input_tokens}')
+        print(f'output_tokens={result.usage.output_tokens}')
+        print(f'total_cost_usd={result.total_cost_usd:.6f}')
+        if result.stop_reason:
+            print(f'stop_reason={result.stop_reason}')
+        if result.session_id:
+            print('\n# Session')
+            print(f'session_id={result.session_id}')
+            if result.session_path:
+                print(f'session_path={result.session_path}')
+        if result.scratchpad_directory:
+            print(f'scratchpad_directory={result.scratchpad_directory}')
     if show_transcript:
         print('\n# Transcript')
         for message in result.transcript:
@@ -497,45 +504,165 @@ def _run_agent_chat_loop(
     output_func: Callable[[str], None] = print,
     result_printer: Callable[..., None] = _print_agent_result,
 ) -> int:
+    from . import tui
+
     active_session_id = resume_session_id
     first_prompt = initial_prompt
 
-    output_func('# Agent Chat')
-    output_func("Enter a prompt. Use '/exit' or '/quit' to stop.")
-    if active_session_id:
-        output_func(f'resuming_session_id={active_session_id}')
+    # Initialize TUI state
+    tui.set_state(
+        model=agent.model_config.model,
+        cwd=str(agent.runtime_config.cwd),
+        context_pct=0,
+        permissions='full access' if agent.runtime_config.permissions.allow_destructive_shell_commands
+            else 'write + shell' if agent.runtime_config.permissions.allow_shell_commands
+            else 'write' if agent.runtime_config.permissions.allow_file_write
+            else 'read-only',
+    )
+
+    cumulative_input_tokens = 0
+    cumulative_output_tokens = 0
+    turn_count = 0
+
+    # Use TUI when default funcs, fallback for tests with custom funcs
+    use_tui = (input_func is input and output_func is print)
+
+    if use_tui:
+        tui.banner()
+        if active_session_id:
+            tui.info(f'resuming session {active_session_id[:12]}...')
+    else:
+        output_func('# Agent Chat')
+        output_func("Enter a prompt. Use '/exit' or '/quit' to stop.")
 
     while True:
         if first_prompt is not None:
-            prompt = first_prompt
+            user_input = first_prompt
             first_prompt = None
         else:
             try:
-                prompt = input_func('user> ')
-            except EOFError:
-                output_func('chat_ended=eof')
+                user_input = tui.prompt() if use_tui else input_func('user> ')
+            except (EOFError, KeyboardInterrupt):
+                if use_tui:
+                    tui.cleanup()
+                else:
+                    output_func('chat_ended=eof')
                 return 0
-            except KeyboardInterrupt:
-                output_func('\nchat_ended=interrupt')
-                return 130
 
-        normalized = prompt.strip()
+        normalized = user_input.strip()
         if not normalized:
             continue
         if normalized in {'/exit', '/quit'}:
-            output_func('chat_ended=user_exit')
+            if use_tui:
+                tui.cleanup()
+                tui.info('goodbye')
+            else:
+                output_func('chat_ended=user_exit')
             return 0
 
         if active_session_id:
-            stored_session = load_agent_session(
-                active_session_id,
-                directory=agent.runtime_config.session_directory,
-            )
-            result = agent.resume(prompt, stored_session)
+            try:
+                stored_session = load_agent_session(
+                    active_session_id,
+                    directory=agent.runtime_config.session_directory,
+                )
+                result = agent.resume(user_input, stored_session)
+            except (FileNotFoundError, KeyError, json.JSONDecodeError):
+                # Session file missing or corrupt — start fresh
+                active_session_id = None
+                result = agent.run(user_input)
         else:
-            result = agent.run(prompt)
-        result_printer(result, show_transcript=show_transcript)
+            result = agent.run(user_input)
+        # Display result — call result_printer with chat_mode if supported
+        try:
+            result_printer(result, show_transcript=show_transcript, chat_mode=True)
+        except TypeError:
+            result_printer(result, show_transcript=show_transcript)
+        print()  # breathing room
         active_session_id = result.session_id
+        # Persist session ID for auto-resume on next launch
+        _persist_last_session(active_session_id)
+        # Track live session stats
+        turn_count += 1
+        cumulative_input_tokens += result.usage.input_tokens
+        cumulative_output_tokens += result.usage.output_tokens
+        # Context % = last input_tokens (what's in the window now) vs 200K
+        ctx_pct = min(99, int(result.usage.input_tokens * 100 / 200_000)) if result.usage.input_tokens > 0 else 0
+        tui.set_state(
+            context_pct=ctx_pct,
+            total_tokens=cumulative_input_tokens + cumulative_output_tokens,
+            turn_count=turn_count,
+            cost_usd=result.total_cost_usd,
+        )
+        tui.status_footer()  # redraw sticky footer with new data
+        # Voice — speak first 2 sentences of response
+        _speak_response(result.final_output)
+
+
+_LATTI_HOME = os.path.expanduser('~/.latti')
+_LAST_SESSION_FILE = os.path.join(_LATTI_HOME, 'last_session')
+
+
+def _persist_last_session(session_id: str | None) -> None:
+    """Write the active session ID to disk for auto-resume."""
+    if not session_id:
+        return
+    try:
+        os.makedirs(_LATTI_HOME, exist_ok=True)
+        with open(_LAST_SESSION_FILE, 'w') as f:
+            f.write(session_id)
+    except OSError:
+        pass
+
+
+def _load_last_session() -> str | None:
+    """Read the last session ID from disk."""
+    try:
+        with open(_LAST_SESSION_FILE, 'r') as f:
+            sid = f.read().strip()
+            return sid if sid else None
+    except (OSError, FileNotFoundError):
+        return None
+
+
+_last_speak_proc: subprocess.Popen | None = None
+
+
+def _speak_response(text: str) -> None:
+    """Speak the first 1-2 sentences via speak.sh (non-blocking, kills previous)."""
+    global _last_speak_proc
+    speak_script = os.path.expanduser('~/.claude/scripts/speak.sh')
+    if not os.path.isfile(speak_script):
+        return
+    # Kill any still-running previous speech
+    if _last_speak_proc is not None:
+        try:
+            _last_speak_proc.kill()
+            _last_speak_proc.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        _last_speak_proc = None
+    # Also kill any lingering say/speak processes
+    try:
+        subprocess.run(['pkill', '-f', 'speak.sh'], capture_output=True, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    # Extract first 2 sentences
+    import re as _re
+    sentences = _re.split(r'(?<=[.!?])\s+', text.strip())
+    snippet = ' '.join(sentences[:2])[:200]
+    # Strip markdown formatting for cleaner speech
+    snippet = _re.sub(r'[*_#`\[\]()]', '', snippet).strip()
+    if not snippet:
+        return
+    try:
+        _last_speak_proc = subprocess.Popen(
+            ['bash', speak_script, snippet],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
 
 
 def build_parser() -> argparse.ArgumentParser:

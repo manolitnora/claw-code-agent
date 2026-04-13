@@ -907,6 +907,11 @@ class LocalCodingAgent:
                             'message': policy_block_message,
                         }
                     )
+                # TUI: show tool call
+                from . import tui as _tui
+                _tool_detail = self._tool_call_detail(tool_call)
+                _tui.tool_start(tool_call.name, _tool_detail)
+
                 if tool_call.name == 'delegate_agent':
                     if tool_result is None:
                         tool_result = self._execute_delegate_agent(tool_call.arguments)
@@ -937,6 +942,15 @@ class LocalCodingAgent:
                         tool_result = update.result
                 if tool_result is None:
                     raise RuntimeError(f'Tool executor returned no final result for {tool_call.name}')
+                # TUI: show tool result
+                if tool_result.ok:
+                    _content = tool_result.content or 'ok'
+                    # Show first line only, max 100 chars
+                    _first_line = _content.split('\n')[0]
+                    _summary = _first_line[:100] + '...' if len(_first_line) > 100 else _first_line
+                    _tui.tool_result(tool_call.name, _summary)
+                else:
+                    _tui.tool_error(tool_call.name, tool_result.content or 'error')
                 if self.plugin_runtime is not None:
                     self.plugin_runtime.record_tool_result(
                         tool_call.name,
@@ -1149,6 +1163,13 @@ class LocalCodingAgent:
         usage = UsageStats()
         finish_reason: str | None = None
         events: list[StreamEvent] = []
+
+        # TUI stream renderer for formatted output
+        from . import tui as _tui
+        renderer = _tui.StreamRenderer()
+        renderer.start()
+        has_content = False
+
         for event in self.client.stream(
             session.to_openai_messages(),
             tool_specs,
@@ -1157,6 +1178,8 @@ class LocalCodingAgent:
             events.append(event)
             if event.type == 'content_delta':
                 session.append_assistant_delta(assistant_index, event.delta)
+                renderer.token(event.delta)
+                has_content = True
             elif event.type == 'tool_call_delta':
                 session.merge_assistant_tool_call_delta(
                     assistant_index,
@@ -1169,6 +1192,9 @@ class LocalCodingAgent:
                 usage = usage + event.usage
             elif event.type == 'message_stop':
                 finish_reason = event.finish_reason
+
+        if has_content:
+            renderer.end()
 
         session.finalize_assistant(
             assistant_index,
@@ -1184,6 +1210,29 @@ class LocalCodingAgent:
             usage=usage,
         )
         return turn, tuple(events)
+
+    @staticmethod
+    def _tool_call_detail(tool_call) -> str:
+        """Extract a human-readable detail string for TUI display."""
+        args = tool_call.arguments or {}
+        name = tool_call.name
+        if name in ('read_file', 'write_file', 'edit_file'):
+            return str(args.get('path', ''))
+        if name == 'bash':
+            cmd = str(args.get('command', ''))
+            return cmd[:80] + '...' if len(cmd) > 80 else cmd
+        if name in ('glob_search', 'grep_search'):
+            return str(args.get('pattern', ''))
+        if name == 'lattice_solve':
+            p = str(args.get('problem', ''))
+            return p[:80] + '...' if len(p) > 80 else p
+        if name == 'list_dir':
+            return str(args.get('path', '.'))
+        if name == 'web_fetch':
+            return str(args.get('url', ''))
+        if name == 'web_search':
+            return str(args.get('query', ''))
+        return ''
 
     def _tool_calls_from_message(
         self,
