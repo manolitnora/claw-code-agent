@@ -45,6 +45,7 @@ from .agent_types import (
     ToolExecutionResult,
     UsageStats,
 )
+from .model_router import ModelRouter, RouterConfig, RoutingDecision, Tier
 from .openai_compat import OpenAICompatClient, OpenAICompatError
 from .plan_runtime import PlanRuntime
 from .plugin_runtime import PluginRuntime
