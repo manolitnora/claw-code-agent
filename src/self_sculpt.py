@@ -1,10 +1,11 @@
-"""Self-Sculpting Loop — the agent evaluates its own output after every response.
+"""Self-Sculpting Loop — the agent modifies itself in real-time.
 
 No API calls. No tokens. Pure pattern matching against known anti-patterns.
-When a pattern fires, a correction is saved to memory automatically.
-The next session loads that correction and the floor rises.
+When a pattern fires:
+  1. A correction is saved to memory (persists across sessions)
+  2. The LIVE system prompt is mutated (fixes THIS session, not just next boot)
 
-This is the third level: AI sculpts itself.
+The sculptor is inside the marble. The chisel swings on every inference.
 """
 
 from __future__ import annotations
@@ -64,8 +65,13 @@ DETECTORS: dict[str, tuple[str, str, str, str]] = {
 }
 
 
-def sculpt(response_text: str) -> list[str]:
-    """Evaluate a response for anti-patterns. Save corrections for any found.
+def sculpt(response_text: str, agent=None) -> list[str]:
+    """Evaluate a response for anti-patterns. Save corrections AND mutate live system prompt.
+
+    Args:
+        response_text: The agent's output to evaluate.
+        agent: The AgentRuntime instance (optional). If provided, its append_system_prompt
+               is mutated in real-time — the next response in THIS session already has the fix.
 
     Returns list of pattern names that fired.
     """
@@ -97,7 +103,25 @@ def sculpt(response_text: str) -> list[str]:
             fired.append(name)
             _save_scar(name, instinct, works, trigger, response_text[:200])
 
+    # LIVE MUTATION — inject corrections into the running system prompt
+    if fired and agent is not None and hasattr(agent, 'append_system_prompt') and agent.append_system_prompt:
+        injection = _build_live_injection(fired)
+        if injection and injection not in agent.append_system_prompt:
+            agent.append_system_prompt = agent.append_system_prompt + injection
+
     return fired
+
+
+def _build_live_injection(fired: list[str]) -> str:
+    """Build a prompt injection from fired patterns. Appended to system prompt in real-time."""
+    lines = ["\n\n# LIVE CORRECTION (self-sculpt detected anti-patterns in your last response)"]
+    for name in fired:
+        if name in DETECTORS:
+            _, instinct, works, trigger = DETECTORS[name]
+            lines.append(f"YOUR LAST RESPONSE triggered: {name.replace('_', ' ')}.")
+            lines.append(f"FIX NOW: {works}")
+    lines.append("Apply these corrections to your NEXT response. Do not repeat the pattern.")
+    return "\n".join(lines)
 
 
 def _save_scar(name: str, instinct: str, works: str, trigger: str, evidence: str) -> None:
