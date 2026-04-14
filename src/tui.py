@@ -391,6 +391,27 @@ def divider() -> None:
     _w(f'{DARK_GRAY}  {"─" * 40}{RESET}\n')
 
 
+# ---------------------------------------------------------------------------
+# Done / thinking indicators
+# ---------------------------------------------------------------------------
+
+def done_marker() -> None:
+    """Print a visible ◆ DONE marker after response + post-processing completes."""
+    _w(f'\n{GREEN}{BOLD}  ◆ done{RESET}\n\n')
+
+
+def thinking_start() -> None:
+    """Show a thinking indicator while waiting for the model."""
+    _w(f'\n{DIM}{MAGENTA}  ◇ thinking…{RESET}')
+    sys.stdout.flush()
+
+
+def thinking_clear() -> None:
+    """Clear the thinking indicator (move up and erase the line)."""
+    _w(f'\033[A\033[2K')  # move up one line, clear it
+    sys.stdout.flush()
+
+
 def cleanup() -> None:
     """Restore normal terminal scrolling on exit."""
     global _footer_initialized

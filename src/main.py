@@ -566,13 +566,25 @@ def _run_agent_chat_loop(
                     active_session_id,
                     directory=agent.runtime_config.session_directory,
                 )
+                if use_tui:
+                    tui.thinking_start()
                 result = agent.resume(user_input, stored_session)
+                if use_tui:
+                    tui.thinking_clear()
             except (FileNotFoundError, KeyError, json.JSONDecodeError):
                 # Session file missing or corrupt — start fresh
                 active_session_id = None
+                if use_tui:
+                    tui.thinking_start()
                 result = agent.run(user_input)
+                if use_tui:
+                    tui.thinking_clear()
         else:
+            if use_tui:
+                tui.thinking_start()
             result = agent.run(user_input)
+            if use_tui:
+                tui.thinking_clear()
         # Display result — call result_printer with chat_mode if supported
         try:
             result_printer(result, show_transcript=show_transcript, chat_mode=True)
@@ -605,6 +617,11 @@ def _run_agent_chat_loop(
             _fired = _sculpt(result.final_output or '', agent=agent)
         except Exception:
             _fired = []
+        # === TURN COMPLETE — signal the human ===
+        if use_tui:
+            tui.done_marker()       # green ◆ done marker
+            sys.stdout.write('\a')  # terminal bell (BEL)
+            sys.stdout.flush()
 
 
 _LATTI_HOME = os.path.expanduser('~/.latti')
