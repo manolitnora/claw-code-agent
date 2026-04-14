@@ -218,37 +218,147 @@ def _check_scale_stability(costs: list[float]) -> bool:
     return abs(mean1 - mean2) / abs(total_mean) < 0.5
 
 
+def _classify_landscape(
+    cost_fn: CostFn, bounds: list[tuple[float, float]], n_scout: int = 200,
+) -> tuple[str, list[float], float]:
+    """Scout the landscape and classify it for algorithm selection.
+
+    Returns (strategy, best_point, best_cost).
+    Strategies: 'smooth', 'convex', 'rugged', 'flat'.
+    """
+    dims = len(bounds)
+
+    # Scout: random samples
+    points = [[random.uniform(lo, hi) for lo, hi in bounds] for _ in range(n_scout)]
+    costs = [cost_fn(p) for p in points]
+
+    best_idx = min(range(n_scout), key=lambda i: costs[i])
+    best_point = points[best_idx]
+    best_cost = costs[best_idx]
+
+    # Check gradient coherence (finite differences at best point)
+    eps = 1e-5
+    grad_coherent = True
+    for d in range(dims):
+        shifted = list(best_point)
+        shifted[d] += eps
+        shifted[d] = min(bounds[d][1], shifted[d])
+        f_plus = cost_fn(shifted)
+        shifted[d] = best_point[d] - eps
+        shifted[d] = max(bounds[d][0], shifted[d])
+        f_minus = cost_fn(shifted)
+        grad = (f_plus - f_minus) / (2 * eps)
+        if not math.isfinite(grad):
+            grad_coherent = False
+            break
+
+    # Check for multiple basins
+    sorted_costs = sorted(costs)
+    low_costs = [c for c in sorted_costs if c < sorted_costs[n_scout // 4]]
+    cost_spread = max(low_costs) - min(low_costs) if low_costs else 0
+    single_basin = cost_spread < abs(best_cost) * 0.1 if abs(best_cost) > 1e-10 else cost_spread < 1e-6
+
+    # Check flatness
+    cost_range = sorted_costs[-1] - sorted_costs[0]
+    is_flat = cost_range < 1e-8
+
+    if is_flat:
+        return 'flat', best_point, best_cost
+    elif grad_coherent and single_basin:
+        return 'smooth', best_point, best_cost
+    elif grad_coherent:
+        return 'rugged', best_point, best_cost
+    else:
+        return 'rugged', best_point, best_cost
+
+
+def _gradient_polish(
+    cost_fn: CostFn, start: list[float], bounds: list[tuple[float, float]],
+    steps: int = 500, lr: float = 0.01,
+) -> tuple[list[float], float]:
+    """Simple gradient descent polish from a starting point."""
+    dims = len(bounds)
+    x = list(start)
+    best_x = list(x)
+    best_cost = cost_fn(x)
+    eps = 1e-6
+
+    for _ in range(steps):
+        grad = []
+        for d in range(dims):
+            xp = list(x)
+            xp[d] = min(bounds[d][1], x[d] + eps)
+            xm = list(x)
+            xm[d] = max(bounds[d][0], x[d] - eps)
+            grad.append((cost_fn(xp) - cost_fn(xm)) / (2 * eps))
+
+        # Update
+        for d in range(dims):
+            x[d] -= lr * grad[d]
+            x[d] = max(bounds[d][0], min(bounds[d][1], x[d]))
+
+        c = cost_fn(x)
+        if c < best_cost:
+            best_cost = c
+            best_x = list(x)
+
+        # Adaptive lr
+        if sum(g * g for g in grad) < 1e-12:
+            break
+
+    return best_x, best_cost
+
+
 def solve(
     cost_fn: CostFn,
     bounds: list[tuple[float, float]],
     samples: int = 10000,
 ) -> SolveResult:
-    """Three-layer adaptive Monte Carlo solver."""
+    """Adaptive solver — classifies landscape, picks the right algorithm."""
     start_time = time.monotonic()
     dims = len(bounds)
     bounds = _compactify_bounds(bounds)
 
-    best = [random.uniform(lo, hi) for lo, hi in bounds]
-    best_cost = cost_fn(best)
+    # Phase 1: Scout and classify
+    strategy, scout_best, scout_cost = _classify_landscape(cost_fn, bounds)
+
+    best = scout_best
+    best_cost = scout_cost
     all_costs: list[float] = []
     total_accepted = 0
     total_tried = 0
 
-    if dims <= 3:
-        layers = [(1.0, 1.0, 0.3)]
+    # Phase 2: Apply strategy
+    if strategy == 'smooth' and dims <= 10:
+        # Gradient descent polish — fast and precise for smooth landscapes
+        best, best_cost = _gradient_polish(cost_fn, best, bounds, steps=1000)
+        all_costs.append(best_cost)
+        total_accepted = 1
+        total_tried = 1
     else:
-        layers = [(0.15, 10.0, 0.5), (0.30, 1.0, 0.15), (0.55, 0.01, 0.05)]
+        # Monte Carlo — works everywhere, especially rugged landscapes
+        if dims <= 3:
+            layers = [(1.0, 1.0, 0.3)]
+        else:
+            layers = [(0.15, 10.0, 0.5), (0.30, 1.0, 0.15), (0.55, 0.01, 0.05)]
 
-    for frac, temp, step in layers:
-        n = max(1, int(samples * frac))
-        lb, lc, costs, accepted, tried = _mc_layer(cost_fn, bounds, best, best_cost, n, temp, step)
-        if lc < best_cost:
-            best = lb
-            best_cost = lc
-        total_accepted += accepted
-        total_tried += tried
-        all_costs.extend(costs)
-        bounds = _zoom_bounds(bounds, best, 0.3)
+        for frac, temp, step in layers:
+            n = max(1, int(samples * frac))
+            lb, lc, costs, accepted, tried = _mc_layer(cost_fn, bounds, best, best_cost, n, temp, step)
+            if lc < best_cost:
+                best = lb
+                best_cost = lc
+            total_accepted += accepted
+            total_tried += tried
+            all_costs.extend(costs)
+            bounds = _zoom_bounds(bounds, best, 0.3)
+
+    # Phase 3: Gradient polish on MC result (if landscape is smooth enough)
+    if strategy != 'flat' and len(all_costs) > 10:
+        polished, polished_cost = _gradient_polish(cost_fn, best, _compactify_bounds(bounds))
+        if polished_cost < best_cost:
+            best = polished
+            best_cost = polished_cost
 
     converged, eff, ratio = _analyse_convergence(all_costs)
     tail_type, tail_exp, tail_r2, _ = _analyse_concentration(all_costs)
