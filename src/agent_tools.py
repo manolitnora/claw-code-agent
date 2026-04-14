@@ -47,6 +47,7 @@ class ToolExecutionContext:
     max_output_chars: int
     permissions: AgentPermissions
     extra_env: dict[str, str] = field(default_factory=dict)
+    additional_roots: tuple[Path, ...] = ()
     tool_registry: dict[str, 'AgentTool'] | None = None
     search_runtime: 'SearchRuntime | None' = None
     account_runtime: 'AccountRuntime | None' = None
@@ -144,6 +145,9 @@ def build_tool_context(
         max_output_chars=config.max_output_chars,
         permissions=config.permissions,
         extra_env=dict(extra_env or {}),
+        additional_roots=tuple(
+            path.resolve() for path in config.additional_working_directories
+        ),
         tool_registry=tool_registry,
         search_runtime=search_runtime,
         account_runtime=account_runtime,
@@ -1158,17 +1162,31 @@ def _coerce_float(arguments: dict[str, Any], key: str, default: float) -> float:
     return float(value)
 
 
+def _relative_to_any_root(path: Path, context: ToolExecutionContext) -> Path:
+    """Return a relative path against the primary root or any additional root."""
+    for root in (context.root, *context.additional_roots):
+        try:
+            return path.relative_to(root)
+        except ValueError:
+            continue
+    return path
+
+
 def _resolve_path(raw_path: str, context: ToolExecutionContext, *, allow_missing: bool = True) -> Path:
     expanded = Path(raw_path).expanduser()
     candidate = expanded if expanded.is_absolute() else context.root / expanded
     resolved = candidate.resolve(strict=not allow_missing)
-    try:
-        resolved.relative_to(context.root)
-    except ValueError as exc:
-        raise ToolExecutionError(
-            f'Path {raw_path!r} escapes the workspace root {context.root}'
-        ) from exc
-    return resolved
+    # Check primary root first, then additional roots
+    allowed_roots = (context.root, *context.additional_roots)
+    for root in allowed_roots:
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except ValueError:
+            continue
+    raise ToolExecutionError(
+        f'Path {raw_path!r} escapes the workspace root {context.root}'
+    )
 
 
 def _ensure_write_allowed(context: ToolExecutionContext) -> None:
@@ -1219,7 +1237,7 @@ def _list_dir(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     lines: list[str] = []
     for entry in entries[:max_entries]:
         kind = 'dir' if entry.is_dir() else 'file'
-        rel = entry.relative_to(context.root)
+        rel = _relative_to_any_root(entry, context)
         lines.append(f'{kind}\t{rel}')
     if len(entries) > max_entries:
         lines.append(f'... truncated at {max_entries} entries ...')
@@ -1334,7 +1352,7 @@ def _write_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str
         previous_sha256 = hashlib.sha256(previous_text.encode('utf-8')).hexdigest()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding='utf-8')
-    rel = target.relative_to(context.root)
+    rel = _relative_to_any_root(target, context)
     new_sha256 = hashlib.sha256(content.encode('utf-8')).hexdigest()
     return (
         f'wrote {rel} ({len(content)} chars)',
@@ -1382,7 +1400,7 @@ def _edit_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     before_sha256 = hashlib.sha256(current.encode('utf-8')).hexdigest()
     updated = current.replace(old_text, new_text) if replace_all else current.replace(old_text, new_text, 1)
     target.write_text(updated, encoding='utf-8')
-    rel = target.relative_to(context.root)
+    rel = _relative_to_any_root(target, context)
     replaced = occurrences if replace_all else 1
     after_sha256 = hashlib.sha256(updated.encode('utf-8')).hexdigest()
     return (
@@ -1466,7 +1484,7 @@ def _notebook_edit(arguments: dict[str, Any], context: ToolExecutionContext) -> 
     updated = json.dumps(notebook, ensure_ascii=True, indent=1) + '\n'
     target.write_text(updated, encoding='utf-8')
     after_sha256 = hashlib.sha256(updated.encode('utf-8')).hexdigest()
-    rel = target.relative_to(context.root)
+    rel = _relative_to_any_root(target, context)
     return (
         f'updated notebook cell {cell_index} in {rel}',
         {
@@ -1494,7 +1512,7 @@ def _glob_search(arguments: dict[str, Any], context: ToolExecutionContext) -> st
             path.resolve().relative_to(root_resolved)
         except ValueError:
             continue
-        validated.append(str(path.relative_to(context.root)))
+        validated.append(str(_relative_to_any_root(path, context)))
     if not validated:
         return '(no matches)'
     return _truncate_output('\n'.join(validated), context.max_output_chars)
@@ -1527,7 +1545,7 @@ def _grep_search(arguments: dict[str, Any], context: ToolExecutionContext) -> st
             continue
         for line_no, line in enumerate(text.splitlines(), start=1):
             if regex.search(line):
-                rel = file_path.relative_to(context.root)
+                rel = _relative_to_any_root(file_path, context)
                 hits.append(f'{rel}:{line_no}: {line}')
                 if len(hits) >= max_matches:
                     return '\n'.join(hits + [f'... truncated at {max_matches} matches ...'])
