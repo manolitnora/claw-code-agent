@@ -16,6 +16,7 @@ archive/
 # Local agent/runtime artifacts
 .claude/
 .claude.json
+.claw/
 .port_sessions/
 
 # Environment files
