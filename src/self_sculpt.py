@@ -27,7 +27,7 @@ DETECTORS: dict[str, tuple[str, str, str, str]] = {
         "The last sentence of any response.",
     ),
     "filler_preamble": (
-        r"(?i)^(that'?s a great question|great question|i find that interesting|what a fascinating|that'?s an excellent|that'?s a profound)",
+        r"(?i)^(that('?s| is) a great question|great question|i find that interesting|what a fascinating|that('?s| is) an excellent|that('?s| is) a profound|that('?s| is) an interesting)",
         "Start responses with filler like 'Great question'.",
         "Just answer. No preamble. No compliments.",
         "The first sentence of any response.",

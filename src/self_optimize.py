@@ -54,7 +54,7 @@ ANTI_PATTERNS = {
         r"(?i)the membrane (fires|knows|speaks)",
     ],
     "precision": [
-        r"(?i)^(that'?s a great question|great question)",
+        r"(?i)^(that('?s| is) a great question|great question|i find that interesting|what a fascinating|that('?s| is) an excellent|that('?s| is) a profound|that('?s| is) an interesting)",
         r"[?]\s*$",
     ],
     "grounding": [
