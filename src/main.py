@@ -597,6 +597,12 @@ def _run_agent_chat_loop(
         tui.status_footer()  # redraw sticky footer with new data
         # Voice — speak first 2 sentences of response
         _speak_response(result.final_output)
+        # Self-sculpt — evaluate response for anti-patterns (zero tokens, real-time)
+        try:
+            from .self_sculpt import sculpt as _sculpt
+            _fired = _sculpt(result.final_output or '')
+        except Exception:
+            _fired = []
 
 
 _LATTI_HOME = os.path.expanduser('~/.latti')
