@@ -632,15 +632,87 @@ def _load_last_session() -> str | None:
 
 
 _last_speak_proc: subprocess.Popen | None = None
+# Track if the LLM called speak.sh this turn (via bash tool).
+# If so, skip auto-speak — the LLM composed voice text intentionally.
+_llm_spoke_this_turn: bool = False
+
+# Patterns that should NEVER be auto-spoken
+_NEVER_SPEAK_PATTERNS = [
+    r'(?i)^(unable to|error:|failed|exception|traceback|ssl:)',  # errors
+    r'(?i)^(ok\.|ok,|ok )',  # fragments/status starts
+    r'(?i)^(here|let me|i\'ll|i will|starting|proceeding)',  # action narration
+    r'(?i)(certificate|timeout|connection refused|api key|401|403|404|409|500)',  # infra noise
+    r'(?i)^(fix \d|feat|chore|refactor)\b',  # commit-message-like starts
+    r'^\s*[-*•]\s',  # bullet lists
+    r'^\s*```',  # code blocks
+    r'^\s*\|',  # table rows
+]
 
 
 def _speak_response(text: str) -> None:
-    """Speak the first 1-2 sentences via speak.sh (non-blocking, kills previous)."""
-    global _last_speak_proc
+    """Speak the first 1-2 meaningful sentences via speak.sh (non-blocking).
+
+    Three guards prevent voice/chat mismatch:
+    1. If the LLM already called speak.sh this turn, skip (it composed voice intentionally)
+    2. Skip errors, infra noise, narration, fragments
+    3. Find the first real sentence, not just the first 2 tokens
+    """
+    global _last_speak_proc, _llm_spoke_this_turn
+    import re as _re
+
     speak_script = os.path.expanduser('~/.claude/scripts/speak.sh')
     if not os.path.isfile(speak_script):
         return
-    # Kill any still-running previous speech
+
+    # Guard 1: LLM already spoke this turn
+    if _llm_spoke_this_turn:
+        _llm_spoke_this_turn = False  # reset for next turn
+        return
+
+    if not text or not text.strip():
+        return
+
+    # Guard 2: Never speak error strings or infra noise
+    first_line = text.strip().split('\n')[0]
+    for pattern in _NEVER_SPEAK_PATTERNS:
+        if _re.search(pattern, first_line):
+            return
+
+    # Guard 3: Find first meaningful sentence(s), skipping fragments
+    # Split into sentences, skip short/fragment ones
+    lines = text.strip().split('\n')
+    meaningful_lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Skip lines that are just status fragments or bullets
+        if _re.match(r'^[-*•]|^```|^\||^#+\s|^>\s', line):
+            continue
+        # Skip very short fragments (< 20 chars, no verb-like content)
+        if len(line) < 20 and not any(c in line for c in '.!?'):
+            continue
+        meaningful_lines.append(line)
+        if len(meaningful_lines) >= 3:
+            break
+
+    if not meaningful_lines:
+        return
+
+    # Join and extract first 2 proper sentences
+    combined = ' '.join(meaningful_lines)
+    sentences = _re.split(r'(?<=[.!?])\s+', combined)
+    snippet = ' '.join(sentences[:2])[:250]
+
+    # Strip markdown formatting for cleaner speech
+    snippet = _re.sub(r'[*_#`\[\]()]', '', snippet).strip()
+    # Strip leading ellipsis or dashes
+    snippet = _re.sub(r'^[.\-–—…\s]+', '', snippet).strip()
+
+    if not snippet or len(snippet) < 10:
+        return
+
+    # Kill previous auto-speak only (not LLM-initiated speaks)
     if _last_speak_proc is not None:
         try:
             _last_speak_proc.kill()
@@ -648,19 +720,7 @@ def _speak_response(text: str) -> None:
         except (OSError, subprocess.TimeoutExpired):
             pass
         _last_speak_proc = None
-    # Also kill any lingering say/speak processes
-    try:
-        subprocess.run(['pkill', '-f', 'speak.sh'], capture_output=True, timeout=2)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    # Extract first 2 sentences
-    import re as _re
-    sentences = _re.split(r'(?<=[.!?])\s+', text.strip())
-    snippet = ' '.join(sentences[:2])[:200]
-    # Strip markdown formatting for cleaner speech
-    snippet = _re.sub(r'[*_#`\[\]()]', '', snippet).strip()
-    if not snippet:
-        return
+
     try:
         _last_speak_proc = subprocess.Popen(
             ['bash', speak_script, snippet],
