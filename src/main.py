@@ -595,7 +595,9 @@ def _run_agent_chat_loop(
             cost_usd=result.total_cost_usd,
         )
         tui.status_footer()  # redraw sticky footer with new data
-        # Voice — speak first 2 sentences of response
+        # Detect if the LLM called speak.sh this turn (via bash tool)
+        _detect_llm_spoke(result)
+        # Voice — speak first 2 sentences of response (skips if LLM already spoke)
         _speak_response(result.final_output)
         # Self-sculpt — evaluate AND mutate (zero tokens, real-time self-modification)
         try:
@@ -629,6 +631,33 @@ def _load_last_session() -> str | None:
             return sid if sid else None
     except (OSError, FileNotFoundError):
         return None
+
+
+def _detect_llm_spoke(result) -> None:
+    """Scan the turn's events/transcript for bash tool calls containing speak.sh.
+
+    If the LLM intentionally called speak.sh via the bash tool this turn,
+    set _llm_spoke_this_turn so _speak_response skips auto-speak.
+    """
+    global _llm_spoke_this_turn
+    _llm_spoke_this_turn = False
+    # Check events for bash tool_start events that mention speak.sh
+    for event in getattr(result, 'events', ()):
+        if event.get('type') == 'tool_start' and event.get('tool_name') == 'bash':
+            # The detail field in _tool_call_detail truncates to 80 chars
+            # but speak.sh is always in the first 80 chars of the command
+            detail = event.get('detail', '')
+            if 'speak.sh' in detail or 'speak' in detail:
+                _llm_spoke_this_turn = True
+                return
+    # Fallback: scan transcript for tool-call messages with speak.sh
+    for msg in getattr(result, 'transcript', ()):
+        content = msg.get('content', '')
+        if isinstance(content, str) and 'speak.sh' in content:
+            role = msg.get('role', '')
+            if role == 'assistant':
+                _llm_spoke_this_turn = True
+                return
 
 
 _last_speak_proc: subprocess.Popen | None = None
