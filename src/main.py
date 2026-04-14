@@ -634,30 +634,36 @@ def _load_last_session() -> str | None:
 
 
 def _detect_llm_spoke(result) -> None:
-    """Scan the turn's events/transcript for bash tool calls containing speak.sh.
+    """Scan the turn's transcript for bash tool calls containing speak.sh.
 
     If the LLM intentionally called speak.sh via the bash tool this turn,
     set _llm_spoke_this_turn so _speak_response skips auto-speak.
     """
     global _llm_spoke_this_turn
     _llm_spoke_this_turn = False
-    # Check events for bash tool_start events that mention speak.sh
-    for event in getattr(result, 'events', ()):
-        if event.get('type') == 'tool_start' and event.get('tool_name') == 'bash':
-            # The detail field in _tool_call_detail truncates to 80 chars
-            # but speak.sh is always in the first 80 chars of the command
-            detail = event.get('detail', '')
-            if 'speak.sh' in detail or 'speak' in detail:
+    # Scan transcript — assistant messages with tool_calls contain the command
+    for msg in getattr(result, 'transcript', ()):
+        role = msg.get('role', '')
+        if role != 'assistant':
+            continue
+        # Check tool_calls array (OpenAI format)
+        tool_calls = msg.get('tool_calls', ())
+        for tc in tool_calls:
+            fn = tc.get('function', {}) if isinstance(tc, dict) else {}
+            if fn.get('name') != 'bash':
+                continue
+            raw_args = fn.get('arguments', '')
+            if isinstance(raw_args, str) and 'speak' in raw_args:
                 _llm_spoke_this_turn = True
                 return
-    # Fallback: scan transcript for tool-call messages with speak.sh
-    for msg in getattr(result, 'transcript', ()):
+            if isinstance(raw_args, dict) and 'speak' in str(raw_args.get('command', '')):
+                _llm_spoke_this_turn = True
+                return
+        # Also check content — some formats inline tool calls in content
         content = msg.get('content', '')
         if isinstance(content, str) and 'speak.sh' in content:
-            role = msg.get('role', '')
-            if role == 'assistant':
-                _llm_spoke_this_turn = True
-                return
+            _llm_spoke_this_turn = True
+            return
 
 
 _last_speak_proc: subprocess.Popen | None = None
@@ -665,17 +671,22 @@ _last_speak_proc: subprocess.Popen | None = None
 # If so, skip auto-speak — the LLM composed voice text intentionally.
 _llm_spoke_this_turn: bool = False
 
-# Patterns that should NEVER be auto-spoken
+# Patterns that should NEVER be auto-spoken — compiled once at module load
+import re as _re_module
 _NEVER_SPEAK_PATTERNS = [
-    r'(?i)^(unable to|error:|failed|exception|traceback|ssl:)',  # errors
-    r'(?i)^(ok\.|ok,|ok )',  # fragments/status starts
-    r'(?i)^(here|let me|i\'ll|i will|starting|proceeding)',  # action narration
-    r'(?i)(certificate|timeout|connection refused|api key|401|403|404|409|500)',  # infra noise
-    r'(?i)^(fix \d|feat|chore|refactor)\b',  # commit-message-like starts
-    r'^\s*[-*•]\s',  # bullet lists
-    r'^\s*```',  # code blocks
-    r'^\s*\|',  # table rows
+    _re_module.compile(r'(?i)^(unable to|error:|failed|exception|traceback|ssl:)'),  # errors
+    _re_module.compile(r'(?i)^(ok\.|ok,|ok )'),  # fragments/status starts
+    _re_module.compile(r'(?i)^(here|let me|i\'ll|i will|starting|proceeding)'),  # action narration
+    _re_module.compile(r'(?i)(certificate|timeout|connection refused|api key|401|403|404|409|500)'),  # infra noise
+    _re_module.compile(r'(?i)^(fix \d|feat|chore|refactor)\b'),  # commit-message-like starts
+    _re_module.compile(r'^\s*[-*•]\s'),  # bullet lists
+    _re_module.compile(r'^\s*```'),  # code blocks
+    _re_module.compile(r'^\s*\|'),  # table rows
 ]
+_SPEAK_LINE_SKIP = _re_module.compile(r'^[-*•]|^```|^\||^#+\s|^>\s')
+_SPEAK_SENTENCE_SPLIT = _re_module.compile(r'(?<=[.!?])\s+')
+_SPEAK_MARKDOWN_STRIP = _re_module.compile(r'[*_#`\[\]()]')
+_SPEAK_LEADING_STRIP = _re_module.compile(r'^[.\-–—…\s]+')
 
 
 def _speak_response(text: str) -> None:
@@ -701,24 +712,21 @@ def _speak_response(text: str) -> None:
     if not text or not text.strip():
         return
 
-    # Guard 2: Never speak error strings or infra noise
+    # Guard 2: Never speak error strings or infra noise (pre-compiled patterns)
     first_line = text.strip().split('\n')[0]
-    for pattern in _NEVER_SPEAK_PATTERNS:
-        if _re.search(pattern, first_line):
+    for compiled_pat in _NEVER_SPEAK_PATTERNS:
+        if compiled_pat.search(first_line):
             return
 
     # Guard 3: Find first meaningful sentence(s), skipping fragments
-    # Split into sentences, skip short/fragment ones
     lines = text.strip().split('\n')
     meaningful_lines = []
     for line in lines:
         line = line.strip()
         if not line:
             continue
-        # Skip lines that are just status fragments or bullets
-        if _re.match(r'^[-*•]|^```|^\||^#+\s|^>\s', line):
+        if _SPEAK_LINE_SKIP.match(line):
             continue
-        # Skip very short fragments (< 20 chars, no verb-like content)
         if len(line) < 20 and not any(c in line for c in '.!?'):
             continue
         meaningful_lines.append(line)
@@ -730,13 +738,12 @@ def _speak_response(text: str) -> None:
 
     # Join and extract first 2 proper sentences
     combined = ' '.join(meaningful_lines)
-    sentences = _re.split(r'(?<=[.!?])\s+', combined)
+    sentences = _SPEAK_SENTENCE_SPLIT.split(combined)
     snippet = ' '.join(sentences[:2])[:250]
 
     # Strip markdown formatting for cleaner speech
-    snippet = _re.sub(r'[*_#`\[\]()]', '', snippet).strip()
-    # Strip leading ellipsis or dashes
-    snippet = _re.sub(r'^[.\-–—…\s]+', '', snippet).strip()
+    snippet = _SPEAK_MARKDOWN_STRIP.sub('', snippet).strip()
+    snippet = _SPEAK_LEADING_STRIP.sub('', snippet).strip()
 
     if not snippet or len(snippet) < 10:
         return
