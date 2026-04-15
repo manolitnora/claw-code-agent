@@ -6,7 +6,6 @@ Pure ANSI escape codes. Zero dependencies.
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import sys
 
@@ -46,11 +45,9 @@ def _w(s: str) -> None:
 # ---------------------------------------------------------------------------
 
 def banner() -> None:
-    # Clear screen first
     _w('\033[2J\033[H')
     _w(f'\n{BLUE}{BOLD}  ◆ Latti Nora{RESET}{GRAY}  — lattice mind{RESET}\n')
     _w(f'{DARK_GRAY}  {"─" * 40}{RESET}\n\n')
-    _init_footer()
 
 
 # ---------------------------------------------------------------------------
@@ -103,36 +100,11 @@ def _term_width() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Status footer (persistent at bottom)
+# Status footer (inline — printed after each turn, scrolls with content)
 # ---------------------------------------------------------------------------
 
-_footer_initialized = False
-_scroll_region_active = False
-
-
-def _init_footer() -> None:
-    """Initialize persistent footer with scroll region."""
-    global _footer_initialized, _scroll_region_active
-    _footer_initialized = True
-    _scroll_region_active = True
-    
-    # Set up scroll region (leave 3 lines at bottom for footer)
-    rows = _term_height()
-    _w(f'\033[1;{rows-3}r')  # Set scroll region from line 1 to (rows-3)
-    _draw_footer()
-    _position_cursor_in_content_area()
-
-
-def _term_height() -> int:
-    try:
-        return shutil.get_terminal_size().lines
-    except Exception:
-        return 24
-
-
-def _draw_footer() -> None:
-    """Draw the persistent footer at the bottom of the terminal."""
-    rows = _term_height()
+def _render_footer_lines() -> tuple[str, str, str]:
+    """Build the three footer lines without printing them."""
     w = _term_width()
     model = _state['model']
     short_model = model.split('/')[-1] if '/' in model else model
@@ -141,7 +113,6 @@ def _draw_footer() -> None:
     filled = max(0, pct // 10)
     empty = 10 - filled
     bar = '█' * filled + '░' * empty
-    perms = _state['permissions']
     tokens = _state['total_tokens']
     turns = _state['turn_count']
     cost = _state['cost_usd']
@@ -155,39 +126,18 @@ def _draw_footer() -> None:
 
     cost_str = f' │ ${cost:.4f}' if cost > 0.001 else ''
 
-    line1 = f'{"─" * w}'
-    line2 = f'  Latti │ {short_model} │ [{cwd}] {bar} {pct}%{cost_str}'
-    line3 = f'  ⏵⏵ {perms} │ {tok_str} tokens │ turn {turns}'
-
-    # Save cursor position
-    _w('\033[s')
-    
-    # Move to footer area and draw
-    _w(f'\033[{rows-2};1H')  # Move to line (rows-2), column 1
-    _w(f'{DARK_GRAY}{line1}{RESET}')
-    _w(f'\033[{rows-1};1H')  # Move to line (rows-1), column 1
-    _w(f'{DARK_GRAY}{line2}{RESET}')
-    _w(f'\033[{rows};1H')    # Move to line (rows), column 1
-    _w(f'{DARK_GRAY}{line3}{RESET}')
-    
-    # Restore cursor position
-    _w('\033[u')
-
-
-def _position_cursor_in_content_area() -> None:
-    """Position cursor in the scrollable content area (above footer)."""
-    rows = _term_height()
-    # Move cursor to the line just above the footer
-    _w(f'\033[{rows-3};1H')
+    line1 = '─' * w
+    line2 = f'❯  {short_model} │ [{cwd}] {bar} {pct}%{cost_str}'
+    line3 = f'   {tok_str} tokens │ turn {turns}'
+    return line1, line2, line3
 
 
 def status_footer() -> None:
-    """Update the persistent footer."""
-    if not _footer_initialized:
-        _init_footer()
-    else:
-        _draw_footer()
-        _position_cursor_in_content_area()
+    """Print the status footer inline (no scroll region tricks)."""
+    line1, line2, line3 = _render_footer_lines()
+    _w(f'{DARK_GRAY}{line1}{RESET}\n')
+    _w(f'{DARK_GRAY}{line2}{RESET}\n')
+    _w(f'{DARK_GRAY}{line3}{RESET}\n')
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +148,7 @@ def prompt() -> str:
     """Print the input lane and read input."""
     w = _term_width()
 
-    # Ensure we're in the content area above the footer
-    if _scroll_region_active:
-        _position_cursor_in_content_area()
-
-    # Top divider of the lane
+    # Top divider
     _w(f'{DARK_GRAY}{"─" * w}{RESET}\n')
 
     # Prompt
@@ -213,7 +159,7 @@ def prompt() -> str:
         _w(f'\n{GRAY}  goodbye{RESET}\n')
         raise
 
-    # Bottom divider of the lane
+    # Bottom divider
     _w(f'{DARK_GRAY}{"─" * w}{RESET}\n')
 
     return user_input
@@ -238,9 +184,6 @@ class StreamRenderer:
         self._pending = ''  # small buffer for multi-char markers only
 
     def start(self) -> None:
-        # Ensure we're in the content area
-        if _scroll_region_active:
-            _position_cursor_in_content_area()
         _w(f'\n{WHITE}')
         self._line_start = True
 
@@ -420,10 +363,7 @@ def divider() -> None:
 # ---------------------------------------------------------------------------
 
 def done_marker() -> None:
-    """Print a visible ◆ DONE marker after response + post-processing completes."""
-    # Ensure we're in the content area
-    if _scroll_region_active:
-        _position_cursor_in_content_area()
+    """Print a visible done marker after response + post-processing completes."""
     _w(f'\n{GREEN}{BOLD}  ◆ done{RESET}\n\n')
 
 
@@ -440,15 +380,5 @@ def thinking_clear() -> None:
 
 
 def cleanup() -> None:
-    """Restore normal terminal scrolling on exit."""
-    global _footer_initialized, _scroll_region_active
-    if _scroll_region_active:
-        # Clear the footer area
-        rows = _term_height()
-        _w(f'\033[{rows-2};1H\033[J')  # Move to footer start and clear to end
-        # Reset scroll region to full terminal
-        _w(f'\033[1;{rows}r')
-        # Move cursor to bottom
-        _w(f'\033[{rows};1H')
-        _scroll_region_active = False
-    _footer_initialized = False
+    """No-op — nothing to clean up without scroll regions."""
+    pass

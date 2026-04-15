@@ -566,11 +566,19 @@ def _run_agent_chat_loop(
                     active_session_id,
                     directory=agent.runtime_config.session_directory,
                 )
-                # Guard: if the stored session is already over the safety
-                # ceiling, don't resume it — start fresh instead.
+                # Guard: if the stored session is over budget OR too large
+                # for the model's context, don't resume — start fresh.
                 _stored_cost = getattr(stored_session, 'total_cost_usd', 0.0)
                 _safety_ceiling = 10.0  # matches _check_budget default
-                if _stored_cost >= _safety_ceiling and agent.budget_config.max_total_cost_usd is None:
+                _stored_usage = getattr(stored_session, 'usage', None) or {}
+                _stored_input_tokens = (
+                    _stored_usage.get('input_tokens', 0) if isinstance(_stored_usage, dict)
+                    else getattr(_stored_usage, 'input_tokens', 0)
+                )
+                _context_limit = 150_000  # leave headroom below 200K model limit
+                _over_budget = _stored_cost >= _safety_ceiling and agent.budget_config.max_total_cost_usd is None
+                _over_context = _stored_input_tokens > _context_limit
+                if _over_budget or _over_context:
                     if use_tui:
                         tui.info(f'session {active_session_id[:12]} over budget (${_stored_cost:.2f}) — starting fresh')
                     active_session_id = None
