@@ -46,7 +46,6 @@ def _w(s: str) -> None:
 # ---------------------------------------------------------------------------
 
 def banner() -> None:
-    _w('\033[2J\033[H')  # clear screen
     _w(f'\n{BLUE}{BOLD}  ◆ Latti Nora{RESET}{GRAY}  — lattice mind{RESET}\n')
     _w(f'{DARK_GRAY}  {"─" * 40}{RESET}\n\n')
     _init_footer()
@@ -109,15 +108,10 @@ _footer_initialized = False
 
 
 def _init_footer() -> None:
-    """Set up a scroll region that reserves the bottom 3 lines for the footer."""
+    """Initialize footer state (no scroll region — keeps terminal clean)."""
     global _footer_initialized
-    rows = _term_height()
-    # Set scroll region to all rows except bottom 3
-    _w(f'\033[1;{rows - 3}r')
-    # Move cursor to top of scroll region
-    _w(f'\033[1;1H')
     _footer_initialized = True
-    # Draw initial footer
+    # Just print the footer inline — no scroll region manipulation
     _draw_footer()
 
 
@@ -153,16 +147,13 @@ def _draw_footer() -> None:
 
     cost_str = f' │ ${cost:.4f}' if cost > 0.001 else ''
 
-    line1 = f'─' * w
     line2 = f'  Latti │ {short_model} │ [{cwd}] {bar} {pct}%{cost_str}'
     line3 = f'  ⏵⏵ {perms} │ {tok_str} tokens │ turn {turns}'
 
-    # Save cursor, jump to footer rows, draw, restore cursor
-    _w(f'\033[s')  # save
-    _w(f'\033[{rows - 2};1H\033[K{DARK_GRAY}{line1}{RESET}')
-    _w(f'\033[{rows - 1};1H\033[K{DARK_GRAY}{line2}{RESET}')
-    _w(f'\033[{rows};1H\033[K{DARK_GRAY}{line3}{RESET}')
-    _w(f'\033[u')  # restore
+    # Print inline — no scroll region, no cursor jumping
+    _w(f'\n{DARK_GRAY}{"─" * w}{RESET}\n')
+    _w(f'{DARK_GRAY}{line2}{RESET}\n')
+    _w(f'{DARK_GRAY}{line3}{RESET}\n')
 
 
 def status_footer() -> None:
@@ -416,6 +407,4 @@ def cleanup() -> None:
     """Restore normal terminal scrolling on exit."""
     global _footer_initialized
     if _footer_initialized:
-        _w('\033[r')  # reset scroll region to full terminal
-        _w(f'\033[{_term_height()};1H\n')  # move to bottom
         _footer_initialized = False
