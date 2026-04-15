@@ -118,6 +118,7 @@ class LocalCodingAgent:
     last_session_path: str | None = field(default=None, init=False, repr=False)
     managed_agent_id: str | None = field(default=None, init=False, repr=False)
     resume_source_session_id: str | None = field(default=None, init=False, repr=False)
+    model_router: ModelRouter | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.tool_registry is None:
@@ -197,6 +198,7 @@ class LocalCodingAgent:
             registry = {**registry, **virtual_tools}
         self.tool_registry = registry
         self.client = OpenAICompatClient(self.model_config)
+        self.model_router = ModelRouter(RouterConfig.from_env(), default_heavy_model=self.model_config.model)
         self.tool_context = build_tool_context(
             self.runtime_config,
             tool_registry=self.tool_registry,
