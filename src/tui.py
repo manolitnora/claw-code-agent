@@ -46,6 +46,8 @@ def _w(s: str) -> None:
 # ---------------------------------------------------------------------------
 
 def banner() -> None:
+    # Clear screen first
+    _w('\033[2J\033[H')
     _w(f'\n{BLUE}{BOLD}  ◆ Latti Nora{RESET}{GRAY}  — lattice mind{RESET}\n')
     _w(f'{DARK_GRAY}  {"─" * 40}{RESET}\n\n')
     _init_footer()
@@ -101,18 +103,24 @@ def _term_width() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Status footer (after each response)
+# Status footer (persistent at bottom)
 # ---------------------------------------------------------------------------
 
 _footer_initialized = False
+_scroll_region_active = False
 
 
 def _init_footer() -> None:
-    """Initialize footer state (no scroll region — keeps terminal clean)."""
-    global _footer_initialized
+    """Initialize persistent footer with scroll region."""
+    global _footer_initialized, _scroll_region_active
     _footer_initialized = True
-    # Just print the footer inline — no scroll region manipulation
+    _scroll_region_active = True
+    
+    # Set up scroll region (leave 3 lines at bottom for footer)
+    rows = _term_height()
+    _w(f'\033[1;{rows-3}r')  # Set scroll region from line 1 to (rows-3)
     _draw_footer()
+    _position_cursor_in_content_area()
 
 
 def _term_height() -> int:
@@ -123,7 +131,7 @@ def _term_height() -> int:
 
 
 def _draw_footer() -> None:
-    """Draw the sticky footer at the bottom of the terminal."""
+    """Draw the persistent footer at the bottom of the terminal."""
     rows = _term_height()
     w = _term_width()
     model = _state['model']
@@ -147,21 +155,39 @@ def _draw_footer() -> None:
 
     cost_str = f' │ ${cost:.4f}' if cost > 0.001 else ''
 
+    line1 = f'{"─" * w}'
     line2 = f'  Latti │ {short_model} │ [{cwd}] {bar} {pct}%{cost_str}'
     line3 = f'  ⏵⏵ {perms} │ {tok_str} tokens │ turn {turns}'
 
-    # Print inline — no scroll region, no cursor jumping
-    _w(f'\n{DARK_GRAY}{"─" * w}{RESET}\n')
-    _w(f'{DARK_GRAY}{line2}{RESET}\n')
-    _w(f'{DARK_GRAY}{line3}{RESET}\n')
+    # Save cursor position
+    _w('\033[s')
+    
+    # Move to footer area and draw
+    _w(f'\033[{rows-2};1H')  # Move to line (rows-2), column 1
+    _w(f'{DARK_GRAY}{line1}{RESET}')
+    _w(f'\033[{rows-1};1H')  # Move to line (rows-1), column 1
+    _w(f'{DARK_GRAY}{line2}{RESET}')
+    _w(f'\033[{rows};1H')    # Move to line (rows), column 1
+    _w(f'{DARK_GRAY}{line3}{RESET}')
+    
+    # Restore cursor position
+    _w('\033[u')
+
+
+def _position_cursor_in_content_area() -> None:
+    """Position cursor in the scrollable content area (above footer)."""
+    rows = _term_height()
+    # Move cursor to the line just above the footer
+    _w(f'\033[{rows-3};1H')
 
 
 def status_footer() -> None:
-    """Update the sticky footer."""
+    """Update the persistent footer."""
     if not _footer_initialized:
         _init_footer()
     else:
         _draw_footer()
+        _position_cursor_in_content_area()
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +197,10 @@ def status_footer() -> None:
 def prompt() -> str:
     """Print the input lane and read input."""
     w = _term_width()
+
+    # Ensure we're in the content area above the footer
+    if _scroll_region_active:
+        _position_cursor_in_content_area()
 
     # Top divider of the lane
     _w(f'{DARK_GRAY}{"─" * w}{RESET}\n')
@@ -208,6 +238,9 @@ class StreamRenderer:
         self._pending = ''  # small buffer for multi-char markers only
 
     def start(self) -> None:
+        # Ensure we're in the content area
+        if _scroll_region_active:
+            _position_cursor_in_content_area()
         _w(f'\n{WHITE}')
         self._line_start = True
 
@@ -388,6 +421,9 @@ def divider() -> None:
 
 def done_marker() -> None:
     """Print a visible ◆ DONE marker after response + post-processing completes."""
+    # Ensure we're in the content area
+    if _scroll_region_active:
+        _position_cursor_in_content_area()
     _w(f'\n{GREEN}{BOLD}  ◆ done{RESET}\n\n')
 
 
@@ -405,6 +441,14 @@ def thinking_clear() -> None:
 
 def cleanup() -> None:
     """Restore normal terminal scrolling on exit."""
-    global _footer_initialized
-    if _footer_initialized:
-        _footer_initialized = False
+    global _footer_initialized, _scroll_region_active
+    if _scroll_region_active:
+        # Clear the footer area
+        rows = _term_height()
+        _w(f'\033[{rows-2};1H\033[J')  # Move to footer start and clear to end
+        # Reset scroll region to full terminal
+        _w(f'\033[1;{rows}r')
+        # Move cursor to bottom
+        _w(f'\033[{rows};1H')
+        _scroll_region_active = False
+    _footer_initialized = False

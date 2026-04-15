@@ -143,6 +143,7 @@ class OpenAICompatClient:
         tools: list[dict[str, Any]],
         *,
         output_schema: OutputSchemaConfig | None = None,
+        model_override: str | None = None,
     ) -> AssistantTurn:
         payload = self._request_json(
             self._build_payload(
@@ -150,6 +151,7 @@ class OpenAICompatClient:
                 tools=tools,
                 stream=False,
                 output_schema=output_schema,
+                model_override=model_override,
             )
         )
         choices = payload.get('choices')
@@ -184,12 +186,14 @@ class OpenAICompatClient:
         tools: list[dict[str, Any]],
         *,
         output_schema: OutputSchemaConfig | None = None,
+        model_override: str | None = None,
     ) -> Iterator[StreamEvent]:
         payload = self._build_payload(
             messages=messages,
             tools=tools,
             stream=True,
             output_schema=output_schema,
+            model_override=model_override,
         )
         req = request.Request(
             _join_url(self.config.base_url, '/chat/completions'),
@@ -254,9 +258,10 @@ class OpenAICompatClient:
         tools: list[dict[str, Any]],
         stream: bool,
         output_schema: OutputSchemaConfig | None,
+        model_override: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            'model': self.config.model,
+            'model': model_override or self.config.model,
             'messages': messages,
             'tools': tools,
             'tool_choice': 'auto',

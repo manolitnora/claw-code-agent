@@ -566,11 +566,27 @@ def _run_agent_chat_loop(
                     active_session_id,
                     directory=agent.runtime_config.session_directory,
                 )
-                if use_tui:
-                    tui.thinking_start()
-                result = agent.resume(user_input, stored_session)
-                if use_tui:
-                    tui.thinking_clear()
+                # Guard: if the stored session is already over the safety
+                # ceiling, don't resume it — start fresh instead.
+                _stored_cost = getattr(stored_session, 'total_cost_usd', 0.0)
+                _safety_ceiling = 10.0  # matches _check_budget default
+                if _stored_cost >= _safety_ceiling and agent.budget_config.max_total_cost_usd is None:
+                    if use_tui:
+                        tui.info(f'session {active_session_id[:12]} over budget (${_stored_cost:.2f}) — starting fresh')
+                    active_session_id = None
+                    stored_session = None
+                    _persist_last_session(None)
+                    if use_tui:
+                        tui.thinking_start()
+                    result = agent.run(user_input)
+                    if use_tui:
+                        tui.thinking_clear()
+                else:
+                    if use_tui:
+                        tui.thinking_start()
+                    result = agent.resume(user_input, stored_session)
+                    if use_tui:
+                        tui.thinking_clear()
             except (FileNotFoundError, KeyError, json.JSONDecodeError):
                 # Session file missing or corrupt — start fresh
                 active_session_id = None
@@ -598,8 +614,10 @@ def _run_agent_chat_loop(
         turn_count += 1
         cumulative_input_tokens += result.usage.input_tokens
         cumulative_output_tokens += result.usage.output_tokens
-        # Context % = last input_tokens (what's in the window now) vs 200K
-        ctx_pct = min(99, int(result.usage.input_tokens * 100 / 200_000)) if result.usage.input_tokens > 0 else 0
+        # Context % = cumulative conversation tokens (excluding system prompt baseline) vs 200K
+        # Use cumulative tokens as a better measure of conversation length
+        conversation_tokens = cumulative_input_tokens + cumulative_output_tokens
+        ctx_pct = min(99, int(conversation_tokens * 100 / 200_000)) if conversation_tokens > 0 else 0
         tui.set_state(
             context_pct=ctx_pct,
             total_tokens=cumulative_input_tokens + cumulative_output_tokens,

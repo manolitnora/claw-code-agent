@@ -91,7 +91,7 @@ def load_agent_session(session_id: str, directory: Path | None = None) -> Stored
             message for message in data['messages'] if isinstance(message, dict)
         ),
         turns=int(data['turns']),
-        tool_calls=int(data['tool_calls']),
+        tool_calls=min(int(data['tool_calls']), 1_000_000),
         usage=dict(data.get('usage', {})),
         total_cost_usd=float(data.get('total_cost_usd', 0.0)),
         file_history=tuple(

@@ -467,6 +467,7 @@ class LocalCodingAgent:
         file_history = list(existing_file_history)
         stream_events: list[dict[str, object]] = []
         assistant_response_segments: list[str] = []
+        consecutive_empty_responses = 0
         delegated_tasks = sum(
             1 for entry in file_history if entry.get('action') == 'delegate_agent'
         )
@@ -721,6 +722,34 @@ class LocalCodingAgent:
                     usage=total_usage,
                     total_cost_usd=total_cost_usd,
                     stop_reason='budget_exceeded',
+                    file_history=tuple(file_history),
+                    session_id=session_id,
+                    scratchpad_directory=(
+                        str(scratchpad_directory) if scratchpad_directory is not None else None
+                    ),
+                )
+                result = self._persist_session(session, result)
+                self.last_run_result = result
+                return result
+
+            # Track consecutive empty responses — stop burning money on nothing
+            if not turn.content.strip() and not turn.tool_calls:
+                consecutive_empty_responses += 1
+            else:
+                consecutive_empty_responses = 0
+            if consecutive_empty_responses >= 3:
+                result = AgentRunResult(
+                    final_output=(
+                        'Stopped: model returned 3 consecutive empty responses. '
+                        'This usually means the input is not a valid prompt.'
+                    ),
+                    turns=turn_index,
+                    tool_calls=tool_calls,
+                    transcript=session.transcript(),
+                    events=tuple(stream_events),
+                    usage=total_usage,
+                    total_cost_usd=total_cost_usd,
+                    stop_reason='empty_responses',
                     file_history=tuple(file_history),
                     session_id=session_id,
                     scratchpad_directory=(
@@ -1126,16 +1155,36 @@ class LocalCodingAgent:
         self.last_run_result = result
         return result
 
+    def _route_model(self, session: AgentSessionState) -> str | None:
+        """Use the model router to pick a cheaper model when possible.
+
+        Returns a model override string, or None to use the default.
+        """
+        if self.model_router is None or not self.model_router.config.enabled:
+            return None
+        # Extract last user message for classification
+        last_user_msg = ''
+        for msg in reversed(session.messages):
+            if getattr(msg, 'role', None) == 'user':
+                last_user_msg = getattr(msg, 'content', '') or ''
+                break
+        decision = self.model_router.classify_turn(last_user_msg)
+        if decision.tier.value != 'heavy':
+            return decision.model
+        return None
+
     def _query_model(
         self,
         session: AgentSessionState,
         tool_specs: list[dict[str, object]],
     ) -> tuple[AssistantTurn, tuple[StreamEvent, ...]]:
+        model_override = self._route_model(session)
         if not self.runtime_config.stream_model_responses:
             turn = self.client.complete(
                 session.to_openai_messages(),
                 tool_specs,
                 output_schema=self.runtime_config.output_schema,
+                model_override=model_override,
             )
             assistant_tool_calls = tuple(
                 {
@@ -1177,6 +1226,7 @@ class LocalCodingAgent:
             session.to_openai_messages(),
             tool_specs,
             output_schema=self.runtime_config.output_schema,
+            model_override=model_override,
         ):
             events.append(event)
             if event.type == 'content_delta':
@@ -1349,6 +1399,27 @@ class LocalCodingAgent:
                 reason=(
                     'Stopped because the session-turn budget was exceeded '
                     f'({session_turns} > {budget.max_session_turns}).'
+                ),
+            )
+        # Safety net: when no explicit cost or model-call budget is configured,
+        # apply hard ceilings to prevent runaway API spend.
+        _SAFETY_MAX_COST_USD = 10.0
+        _SAFETY_MAX_MODEL_CALLS = 200
+        if budget.max_total_cost_usd is None and total_cost_usd > _SAFETY_MAX_COST_USD:
+            return BudgetDecision(
+                exceeded=True,
+                reason=(
+                    f'Stopped: estimated cost (${total_cost_usd:.2f}) hit the '
+                    f'safety ceiling (${_SAFETY_MAX_COST_USD:.2f}). '
+                    f'Set --max-budget-usd to raise.'
+                ),
+            )
+        if budget.max_model_calls is None and model_calls > _SAFETY_MAX_MODEL_CALLS:
+            return BudgetDecision(
+                exceeded=True,
+                reason=(
+                    f'Stopped: {model_calls} model calls hit the safety ceiling '
+                    f'({_SAFETY_MAX_MODEL_CALLS}). Set --max-model-calls to raise.'
                 ),
             )
         return BudgetDecision(exceeded=False)
