@@ -575,7 +575,7 @@ def _run_agent_chat_loop(
                     _stored_usage.get('input_tokens', 0) if isinstance(_stored_usage, dict)
                     else getattr(_stored_usage, 'input_tokens', 0)
                 )
-                _context_limit = 150_000  # leave headroom below 200K model limit
+                _context_limit = 180_000  # leave 20K headroom below 200K model limit
                 _over_budget = _stored_cost >= _safety_ceiling and agent.budget_config.max_total_cost_usd is None
                 _over_context = _stored_input_tokens > _context_limit
                 if _over_budget or _over_context:
@@ -1750,6 +1750,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f'exit_code={record.exit_code}')
             return 0
     if args.command == 'agent-chat':
+        # Latti boot hook: gather system state and inject into prompt
+        if os.environ.get('LATTI_BOOT', '0') == '1':
+            try:
+                from .latti_boot import gather_boot_context
+                boot_ctx = gather_boot_context()
+                if boot_ctx and args.append_system_prompt:
+                    args.append_system_prompt = args.append_system_prompt + '\n\n' + boot_ctx
+                elif boot_ctx:
+                    args.append_system_prompt = boot_ctx
+            except Exception:
+                pass  # boot hook failure is non-fatal
         agent = _build_agent(args)
         return _run_agent_chat_loop(
             agent,
