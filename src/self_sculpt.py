@@ -10,12 +10,56 @@ The sculptor is inside the marble. The chisel swings on every inference.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from datetime import date
 from pathlib import Path
 
 MEMORY_DIR = Path(os.path.expanduser("~/.latti/memory"))
+NN_WEIGHTS_PATH = Path(os.path.expanduser("~/.latti/lattice_nn_weights.json"))
+
+_log = logging.getLogger(__name__)
+
+# ── Lattice NN for behavioral learning ──────────────────────────────
+# The 10 behavioral dimensions the NN tracks.
+# First 7 come from DETECTORS (anti-pattern firing rate per response).
+# Last 3 are higher-level composites from self_optimize's DIMENSIONS.
+BEHAVIORAL_DIMS = [
+    "trailing_question",
+    "filler_preamble",
+    "summarizing",
+    "announcing",
+    "routing",
+    "as_an_ai",
+    "claimed_computation",
+    "brevity",
+    "honesty",
+    "conviction",
+]
+
+_nn = None  # type: ignore[assignment]
+
+
+def _get_nn():
+    """Lazy-init the behavioral LatticeNN. Returns None on failure."""
+    global _nn
+    if _nn is not None:
+        return _nn
+    try:
+        from .lattice_nn import LatticeNN
+        _nn = LatticeNN(
+            feature_names=BEHAVIORAL_DIMS,
+            learning_rate=0.05,
+        )
+        if NN_WEIGHTS_PATH.exists():
+            _nn.load(str(NN_WEIGHTS_PATH))
+            _log.info("Loaded behavioral NN weights from %s", NN_WEIGHTS_PATH)
+    except Exception as e:
+        _log.debug("LatticeNN unavailable: %s", e)
+        _nn = None
+    return _nn
 
 
 # Anti-pattern detectors: name → (pattern, instinct, works, trigger)
@@ -103,13 +147,98 @@ def sculpt(response_text: str, agent=None) -> list[str]:
             fired.append(name)
             _save_scar(name, instinct, works, trigger, response_text[:200])
 
+    # ── Train the lattice NN on this response's behavioral scores ──
+    _train_nn_from_sculpt(fired, response_text)
+
     # LIVE MUTATION — inject corrections into the running system prompt
-    if fired and agent is not None and hasattr(agent, 'append_system_prompt') and agent.append_system_prompt:
-        injection = _build_live_injection(fired)
-        if injection and injection not in agent.append_system_prompt:
-            agent.append_system_prompt = agent.append_system_prompt + injection
+    if agent is not None and hasattr(agent, 'append_system_prompt') and agent.append_system_prompt:
+        if fired:
+            injection = _build_live_injection(fired)
+            if injection and injection not in agent.append_system_prompt:
+                agent.append_system_prompt = agent.append_system_prompt + injection
+        else:
+            # Even on clean responses, inject learned weights as guidance
+            nn_weights = _get_nn_weight_injection()
+            if nn_weights and nn_weights not in agent.append_system_prompt:
+                weight_block = (
+                    "\n\n# LEARNED BEHAVIORAL WEIGHTS (higher = allocate more attention)\n"
+                    + nn_weights
+                )
+                # Replace any existing weight block to avoid accumulation
+                agent.append_system_prompt = re.sub(
+                    r"\n\n# LEARNED BEHAVIORAL WEIGHTS.*?\]",
+                    weight_block,
+                    agent.append_system_prompt,
+                    flags=re.DOTALL,
+                ) if "LEARNED BEHAVIORAL WEIGHTS" in agent.append_system_prompt else (
+                    agent.append_system_prompt + weight_block
+                )
 
     return fired
+
+
+def _train_nn_from_sculpt(fired: list[str], response_text: str) -> None:
+    """Train the lattice NN from a single sculpt evaluation.
+
+    Features: 10 dimension scores (1.0 = clean on that dimension, 0.0 = anti-pattern fired).
+    Outcome: overall quality — 1.0 if no scars fired, scaled down by how many fired.
+    """
+    nn = _get_nn()
+    if nn is None:
+        return
+
+    try:
+        # Build feature vector: each detector dimension = 1.0 (clean) or 0.0 (fired)
+        features: dict[str, float] = {}
+        for dim in BEHAVIORAL_DIMS[:7]:  # the 7 detector dimensions
+            features[dim] = 0.0 if dim in fired else 1.0
+
+        # Composite dimensions from response characteristics
+        line_count = len(response_text.strip().splitlines()) if response_text else 0
+        # brevity: 1.0 if concise (<10 lines), scales down for longer
+        features["brevity"] = max(0.0, min(1.0, 1.0 - (line_count - 5) / 30.0))
+        # honesty: 1.0 unless overclaim patterns found
+        overclaim = len(re.findall(
+            r"(?i)(proves?|establish(es|ed)|definitively|irrefutabl[ey])",
+            response_text or "",
+        ))
+        features["honesty"] = max(0.0, 1.0 - overclaim * 0.25)
+        # conviction: 1.0 unless hedging patterns dominate
+        hedges = len(re.findall(
+            r"(?i)(perhaps|maybe|i think|it seems|it appears|might be)",
+            response_text or "",
+        ))
+        features["conviction"] = max(0.0, 1.0 - hedges * 0.15)
+
+        # Outcome: 1.0 = perfect, reduced by each fired pattern
+        if not fired:
+            outcome = 1.0
+        else:
+            outcome = max(0.0, 1.0 - len(fired) * 0.2)
+
+        nn.train(features, outcome)
+
+        # Persist weights after training
+        NN_WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        nn.save(str(NN_WEIGHTS_PATH))
+    except Exception as e:
+        _log.debug("NN training failed: %s", e)
+
+
+def _get_nn_weight_injection() -> str:
+    """Get current NN weights formatted as a behavioral constraint string."""
+    nn = _get_nn()
+    if nn is None:
+        return ""
+
+    try:
+        weight_parts = []
+        for dim in BEHAVIORAL_DIMS:
+            w = nn.weights.get(dim, 1.0)
+            weight_parts.append(f"{dim}={w:.2f}")
+        return f"[Behavioral weights: {', '.join(weight_parts)}]"
+    except Exception:
+        return ""
 
 
 def _build_live_injection(fired: list[str]) -> str:
@@ -121,6 +250,13 @@ def _build_live_injection(fired: list[str]) -> str:
             lines.append(f"YOUR LAST RESPONSE triggered: {name.replace('_', ' ')}.")
             lines.append(f"FIX NOW: {works}")
     lines.append("Apply these corrections to your NEXT response. Do not repeat the pattern.")
+
+    # Include learned behavioral weights from the lattice NN
+    nn_weights = _get_nn_weight_injection()
+    if nn_weights:
+        lines.append(f"\n# LEARNED BEHAVIORAL WEIGHTS (higher = allocate more attention)")
+        lines.append(nn_weights)
+
     return "\n".join(lines)
 
 

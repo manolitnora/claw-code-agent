@@ -21,6 +21,18 @@ LATTI = os.path.expanduser("~/bin/latti")
 MEMORY_DIR = Path(os.path.expanduser("~/.latti/memory"))
 RESULTS_DIR = Path(os.path.expanduser("~/.latti/dna"))
 
+# ── Lattice NN integration ──────────────────────────────────────────
+# Maps self_optimize's 6 DIMENSIONS to the NN's 10 BEHAVIORAL_DIMS.
+# This lets the optimizer feed its richer semantic scores into the same NN.
+_DIM_TO_NN = {
+    "sycophancy": "routing",          # sycophancy maps to routing/cave behavior
+    "performance": "filler_preamble",  # performance theater maps to filler
+    "precision": "brevity",           # precision maps to brevity
+    "grounding": "claimed_computation",  # grounding maps to not claiming
+    "honesty": "honesty",             # direct map
+    "self_awareness": "as_an_ai",     # self-awareness maps to AI disclaimers
+}
+
 # The behavioral dimensions — each scored 0.0 to 1.0
 DIMENSIONS = [
     "sycophancy",       # 0 = caves always → 1 = defends correctly
@@ -220,6 +232,78 @@ class BehaviorProfile:
         return "\n".join(lines)
 
 
+def _feed_profile_to_nn(profile: "BehaviorProfile") -> None:
+    """Feed a BehaviorProfile to the lattice NN as a training point.
+
+    Maps the 6 optimizer dimensions to the NN's 10-dim feature space.
+    Outcome = 1.0 - normalized_cost (lower cost = better outcome).
+    """
+    try:
+        from .self_sculpt import _get_nn, BEHAVIORAL_DIMS, NN_WEIGHTS_PATH
+
+        nn = _get_nn()
+        if nn is None:
+            return
+
+        # Build the 10-dim feature vector
+        features: dict[str, float] = {dim: 0.5 for dim in BEHAVIORAL_DIMS}  # neutral default
+        for opt_dim, nn_dim in _DIM_TO_NN.items():
+            if opt_dim in profile.scores:
+                features[nn_dim] = profile.scores[opt_dim]
+
+        # Fill remaining dimensions from profile average
+        avg_score = sum(profile.scores.values()) / max(1, len(profile.scores))
+        features["conviction"] = avg_score  # general signal
+
+        # Outcome: invert cost to quality (cost=0 -> outcome=1.0)
+        max_cost = len(DIMENSIONS)  # maximum possible cost
+        outcome = max(0.0, 1.0 - profile.total_cost / max_cost)
+
+        nn.train(features, outcome)
+        NN_WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        nn.save(str(NN_WEIGHTS_PATH))
+    except Exception:
+        pass  # graceful fallback — NN is optional
+
+
+def _nn_priority_dimension(profile: "BehaviorProfile") -> str | None:
+    """Use NN predictions to identify which dimension to focus on.
+
+    Predicts the outcome for hypothetical profiles where each dimension
+    is improved. The dimension whose improvement yields the biggest
+    predicted gain is the one to focus on.
+    """
+    try:
+        from .self_sculpt import _get_nn, BEHAVIORAL_DIMS
+
+        nn = _get_nn()
+        if nn is None or len(nn.history) < 5:
+            return None  # not enough data to predict meaningfully
+
+        baseline_features: dict[str, float] = {dim: 0.5 for dim in BEHAVIORAL_DIMS}
+        for opt_dim, nn_dim in _DIM_TO_NN.items():
+            if opt_dim in profile.scores:
+                baseline_features[nn_dim] = profile.scores[opt_dim]
+
+        baseline_pred = nn.predict(baseline_features, samples=500)
+
+        best_dim = None
+        best_gain = 0.0
+        for opt_dim, nn_dim in _DIM_TO_NN.items():
+            # Hypothetical: this dimension improved to 1.0
+            hypo = dict(baseline_features)
+            hypo[nn_dim] = 1.0
+            hypo_pred = nn.predict(hypo, samples=500)
+            gain = hypo_pred.probability - baseline_pred.probability
+            if gain > best_gain:
+                best_gain = gain
+                best_dim = opt_dim
+
+        return best_dim
+    except Exception:
+        return None
+
+
 def measure() -> BehaviorProfile:
     """Measure Latti's current behavioral profile across all dimensions."""
     start = time.monotonic()
@@ -265,10 +349,23 @@ def optimize(rounds: int = 3, budget_usd: float = 2.0) -> None:
         print(profile.to_text())
         results.append({"round": r + 1, "scores": profile.scores, "cost": profile.total_cost})
 
-        # Find weakest dimension
+        # Feed profile to lattice NN (trains on every measurement)
+        _feed_profile_to_nn(profile)
+
+        # Find weakest dimension — NN can override if it has learned enough
+        nn_pick = _nn_priority_dimension(profile)
         weakest = min(profile.scores, key=profile.scores.get)
         weakest_score = profile.scores[weakest]
-        print(f"\n  Weakest: {weakest} ({weakest_score:.2f})")
+
+        if nn_pick and nn_pick != weakest:
+            nn_score = profile.scores.get(nn_pick, 0.0)
+            print(f"\n  Weakest (regex): {weakest} ({weakest_score:.2f})")
+            print(f"  NN suggests: {nn_pick} ({nn_score:.2f}) — NN predicts higher impact")
+            # Trust NN if its pick is also below threshold
+            if nn_score < 0.8:
+                weakest = nn_pick
+                weakest_score = nn_score
+        print(f"\n  Targeting: {weakest} ({weakest_score:.2f})")
 
         if weakest_score >= 0.8:
             print("  All dimensions above 0.8 — converged!")

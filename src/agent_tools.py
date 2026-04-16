@@ -1111,6 +1111,115 @@ def default_tool_registry() -> dict[str, AgentTool]:
             },
             handler=_lattice_solve,
         ),
+        AgentTool(
+            name='lattice_sector_solve',
+            description=(
+                'Decompose an optimization into independent sectors and combine via log-odds product '
+                '(Bayesian update). Based on Observer-Patch Holography: each sector is an independent '
+                'observer patch. Results combine multiplicatively in log-odds space, not by averaging. '
+                'Input: JSON object mapping sector names to cost function expressions, plus bounds. '
+                'Example: sectors={"distance": "x0^2+x1^2", "penalty": "(x0-3)^2"}, bounds="[-5,5] x [-5,5]". '
+                'Returns combined optimum, per-sector results, and consensus score.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'sectors': {
+                        'type': 'object',
+                        'description': 'Map of sector name to cost function expression (using x0, x1, ...).',
+                        'additionalProperties': {'type': 'string'},
+                    },
+                    'bounds': {
+                        'type': 'string',
+                        'description': 'Bounds in bracket format: "[-5,5] x [-5,5]".',
+                    },
+                    'samples': {
+                        'type': 'integer',
+                        'minimum': 1000,
+                        'maximum': 100000,
+                        'description': 'Monte Carlo samples per sector (default: 5000).',
+                    },
+                },
+                'required': ['sectors', 'bounds'],
+            },
+            handler=_lattice_sector_solve,
+        ),
+        AgentTool(
+            name='lattice_maxent',
+            description=(
+                'Find the maximum-entropy distribution subject to constraints. Based on OPH Lemma 2.6: '
+                'the Gibbs state p(x) ~ exp(-sum lambda_i O_i(x)) is the unique entropy-maximizing answer. '
+                'Input: list of constraints as {name, expression, target} objects, plus bounds. '
+                'Example: constraints=[{"name":"mean_x","expr":"x0","target":3.0}], bounds="[0,10]". '
+                'Returns Lagrange multipliers, constraint errors, and entropy estimate.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'constraints': {
+                        'type': 'array',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'name': {'type': 'string'},
+                                'expr': {'type': 'string', 'description': 'Observable expression using x0, x1, ...'},
+                                'target': {'type': 'number', 'description': 'Target expected value <O_i>.'},
+                            },
+                            'required': ['name', 'expr', 'target'],
+                        },
+                        'description': 'List of (name, observable_expression, target_value) constraints.',
+                    },
+                    'bounds': {
+                        'type': 'string',
+                        'description': 'Bounds in bracket format: "[0,10] x [0,10]".',
+                    },
+                    'samples': {
+                        'type': 'integer',
+                        'minimum': 1000,
+                        'maximum': 100000,
+                        'description': 'Monte Carlo samples (default: 5000).',
+                    },
+                },
+                'required': ['constraints', 'bounds'],
+            },
+            handler=_lattice_maxent,
+        ),
+        AgentTool(
+            name='lattice_nn_predict',
+            description=(
+                'Predict using the lattice neural network — Monte Carlo as hidden layer. '
+                'No gradient descent; the MC sampling IS the computation. '
+                'Input: feature dict (name->value), optional model_path to load saved weights. '
+                'For training: pass features + outcome (0 or 1). '
+                'Returns predicted probability, confidence, and per-feature contributions.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'features': {
+                        'type': 'object',
+                        'description': 'Feature name to value mapping.',
+                        'additionalProperties': {'type': 'number'},
+                    },
+                    'outcome': {
+                        'type': 'number',
+                        'description': 'If provided (0 or 1), train on this outcome after predicting.',
+                    },
+                    'model_path': {
+                        'type': 'string',
+                        'description': 'Path to load/save model weights (JSON). Optional.',
+                    },
+                    'samples': {
+                        'type': 'integer',
+                        'minimum': 500,
+                        'maximum': 50000,
+                        'description': 'Monte Carlo samples (default: 2000).',
+                    },
+                },
+                'required': ['features'],
+            },
+            handler=_lattice_nn_predict,
+        ),
     ]
     return {tool.name: tool for tool in tools}
 
@@ -2899,6 +3008,129 @@ def _lattice_solve(
 
     from .lattice_solver import parse_and_solve
     return parse_and_solve(problem, samples)
+
+
+def _lattice_sector_solve(
+    arguments: dict[str, Any],
+    context: ToolExecutionContext,
+) -> str:
+    sectors_raw = arguments.get('sectors', {})
+    if not isinstance(sectors_raw, dict) or not sectors_raw:
+        raise ToolExecutionError('sectors must be a non-empty object mapping names to expressions')
+
+    bounds_str = arguments.get('bounds', '')
+    if not isinstance(bounds_str, str) or not bounds_str.strip():
+        raise ToolExecutionError('bounds must be a non-empty string like "[-5,5] x [-5,5]"')
+
+    samples = arguments.get('samples', 5000)
+    if not isinstance(samples, int):
+        samples = 5000
+    samples = max(1000, min(100000, samples))
+
+    from .lattice_solver import _extract_bounds, _build_cost_fn
+    bounds = _extract_bounds(bounds_str)
+    if not bounds:
+        raise ToolExecutionError(f'Could not parse bounds from: {bounds_str}')
+
+    dims = len(bounds)
+    sector_fns = {}
+    for name, expr in sectors_raw.items():
+        fn = _build_cost_fn(expr, dims)
+        if fn is None:
+            raise ToolExecutionError(f'Sector "{name}": expression does not reference x0..x{dims-1}: {expr}')
+        sector_fns[name] = fn
+
+    from .lattice_sectors import SectorSolver
+    solver = SectorSolver(sector_fns)
+    result = solver.solve(bounds, samples)
+    return f'Sector Decomposition ({len(sector_fns)} sectors, {dims}D)\n{"="*50}\n{result.to_text()}'
+
+
+def _lattice_maxent(
+    arguments: dict[str, Any],
+    context: ToolExecutionContext,
+) -> str:
+    constraints_raw = arguments.get('constraints', [])
+    if not isinstance(constraints_raw, list) or not constraints_raw:
+        raise ToolExecutionError('constraints must be a non-empty list of {name, expr, target} objects')
+
+    bounds_str = arguments.get('bounds', '')
+    if not isinstance(bounds_str, str) or not bounds_str.strip():
+        raise ToolExecutionError('bounds must be a non-empty string like "[0,10] x [0,10]"')
+
+    samples = arguments.get('samples', 5000)
+    if not isinstance(samples, int):
+        samples = 5000
+    samples = max(1000, min(100000, samples))
+
+    from .lattice_solver import _extract_bounds, _build_cost_fn
+    bounds = _extract_bounds(bounds_str)
+    if not bounds:
+        raise ToolExecutionError(f'Could not parse bounds from: {bounds_str}')
+
+    dims = len(bounds)
+    constraints = []
+    for c in constraints_raw:
+        name = c.get('name', '')
+        expr = c.get('expr', '')
+        target = c.get('target', 0.0)
+        if not name or not expr:
+            raise ToolExecutionError(f'Each constraint needs name and expr, got: {c}')
+        fn = _build_cost_fn(expr, dims)
+        if fn is None:
+            raise ToolExecutionError(f'Constraint "{name}": expression does not reference x0..x{dims-1}: {expr}')
+        constraints.append((name, fn, float(target)))
+
+    from .lattice_maxent import maxent_solve
+    result = maxent_solve(constraints, bounds, samples)
+    return f'MaxEnt Constraint Solver ({len(constraints)} constraints, {dims}D)\n{"="*50}\n{result.to_text()}'
+
+
+def _lattice_nn_predict(
+    arguments: dict[str, Any],
+    context: ToolExecutionContext,
+) -> str:
+    features = arguments.get('features', {})
+    if not isinstance(features, dict) or not features:
+        raise ToolExecutionError('features must be a non-empty object mapping names to numbers')
+
+    # Ensure values are floats
+    for k, v in features.items():
+        if not isinstance(v, (int, float)):
+            raise ToolExecutionError(f'Feature "{k}" must be a number, got {type(v).__name__}')
+    features = {k: float(v) for k, v in features.items()}
+
+    outcome = arguments.get('outcome')
+    model_path = arguments.get('model_path')
+    samples = arguments.get('samples', 2000)
+    if not isinstance(samples, int):
+        samples = 2000
+    samples = max(500, min(50000, samples))
+
+    from .lattice_nn import LatticeNN
+    feature_names = sorted(features.keys())
+    nn = LatticeNN(feature_names)
+
+    # Load saved weights if path provided
+    if model_path and os.path.exists(model_path):
+        nn.load(model_path)
+
+    result = nn.predict(features, samples)
+    output = f'Lattice Neural Network ({len(feature_names)} features)\n{"="*50}\n{result.to_text()}'
+
+    # Train if outcome provided
+    if outcome is not None:
+        outcome_val = float(outcome)
+        nn.train(features, outcome_val)
+        output += f'\n\nTrained on outcome={outcome_val:.2f} (error={abs(outcome_val - result.probability):.4f})'
+
+    # Save if path provided
+    if model_path:
+        nn.save(model_path)
+        output += f'\nModel saved to {model_path}'
+
+    output += f'\n\n{nn.status()}'
+    return output
 
 
 def _lsp_query(arguments: dict[str, Any], context: ToolExecutionContext):
