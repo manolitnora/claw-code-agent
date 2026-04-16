@@ -26,7 +26,7 @@ ITALIC = '\033[3m'
 UNDERLINE = '\033[4m'
 
 BLUE = '\033[38;5;75m'
-GREEN = '\033[38;5;78m'
+GREEN = '\033[38;5;114m'
 YELLOW = '\033[38;5;220m'
 CYAN = '\033[38;5;117m'
 MAGENTA = '\033[38;5;176m'
@@ -290,7 +290,7 @@ class StreamRenderer:
                     _w(RESET + WHITE)
                     self._in_code_inline = False
                 else:
-                    _w(DIM + YELLOW)
+                    _w(YELLOW)
                     self._in_code_inline = True
                 i += 1
                 continue
@@ -337,14 +337,14 @@ class StreamRenderer:
 def tool_start(name: str, detail: str = '') -> None:
     icon = _tool_icon(name)
     label = _tool_label(name)
-    d = f' {GRAY}{detail}{RESET}' if detail else ''
-    _w(f'\n{DIM}{MAGENTA}  {icon} {label}{d}{RESET}\n')
+    d = f' {CYAN}{detail}{RESET}' if detail else ''
+    _w(f'\n{MAGENTA}  {icon} {label}{d}{RESET}\n')
 
 def tool_result(name: str, summary: str) -> None:
-    _w(f'{DIM}{GRAY}  ⎿ {summary}{RESET}\n')
+    _w(f'{GRAY}  ⎿ {summary}{RESET}\n')
 
 def tool_error(name: str, error: str) -> None:
-    _w(f'{DIM}{RED}  ⎿ {error[:120]}{RESET}\n')
+    _w(f'{RED}  ⎿ {error[:120]}{RESET}\n')
 
 def _tool_icon(name: str) -> str:
     return {
@@ -377,7 +377,7 @@ def done_marker() -> None:
     _w(f'\n{GREEN}{BOLD}  ◆ done{RESET}\n\n')
 
 def thinking_start() -> None:
-    _w(f'\n{DIM}{MAGENTA}  ◇ thinking…{RESET}')
+    _w(f'\n{MAGENTA}  ◇ thinking…{RESET}')
     sys.stdout.flush()
 
 def thinking_clear() -> None:
