@@ -1448,6 +1448,37 @@ def _read_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     return _truncate_output(rendered, context.max_output_chars)
 
 
+_LATTI_GATE_PATTERNS = [
+    'run all', 'run every session', 'check automatically',
+    'before responding', 'on first message',
+    'these are not optional', 'run these on',
+]
+_LATTI_GATE_ALLOWED_MD = {'ARCHITECTURE.md', 'AUTONOMY.md', 'MEMORY.md', 'README.md'}
+
+
+def _latti_gate_check(filepath: str, content: str) -> str:
+    """Check if a write to ~/.latti/ is instructions that should be code. Returns warning or empty."""
+    latti_home = os.path.expanduser('~/.latti')
+    if not filepath.startswith(latti_home):
+        return ''
+    if '/memory/' in filepath:
+        return ''  # memory files are the learning loop
+    if not filepath.endswith('.md'):
+        return ''  # .py, .sh, .json are fine
+    if os.path.basename(filepath) in _LATTI_GATE_ALLOWED_MD:
+        return ''
+    content_lower = content.lower()
+    for pattern in _LATTI_GATE_PATTERNS:
+        if pattern in content_lower:
+            return (
+                f'LATTI GATE: This file contains instruction pattern "{pattern}". '
+                f'Consider writing a Python function in latti_boot.py instead. '
+                f'Gate: 1→function in latti_boot.py, 2→tool in agent_tools.py, '
+                f'3→string in gather_boot_context(), 4→STOP creating .md instructions.'
+            )
+    return ''
+
+
 def _write_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     _ensure_write_allowed(context)
     target = _resolve_path(_require_string(arguments, 'path'), context)
@@ -1463,8 +1494,13 @@ def _write_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str
     target.write_text(content, encoding='utf-8')
     rel = _relative_to_any_root(target, context)
     new_sha256 = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    # Latti gate: warn if writing instruction .md to ~/.latti/
+    _gate_warning = _latti_gate_check(str(target), content)
+    _wrote_msg = f'wrote {rel} ({len(content)} chars)'
+    if _gate_warning:
+        _wrote_msg += f'\n\n⚠ {_gate_warning}'
     return (
-        f'wrote {rel} ({len(content)} chars)',
+        _wrote_msg,
         {
             'action': 'write_file',
             'path': str(rel),

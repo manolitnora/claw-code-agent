@@ -509,6 +509,15 @@ def _run_agent_chat_loop(
     active_session_id = resume_session_id
     first_prompt = initial_prompt
 
+    # Auto-boot: if LATTI_BOOT is set and no explicit prompt, generate one
+    # This is Latti's equivalent of Claude Code's SessionStart hook
+    if os.environ.get('LATTI_BOOT', '0') == '1' and first_prompt is None and not active_session_id:
+        first_prompt = (
+            'Boot. Systems checked. Act on what needs attention — '
+            'check pending picks, score settled games, handle errors. '
+            'Report status in 2-3 lines, then wait for my direction.'
+        )
+
     # Initialize TUI state
     tui.set_state(
         model=agent.model_config.model,
@@ -531,6 +540,29 @@ def _run_agent_chat_loop(
         tui.banner()
         if active_session_id:
             tui.info(f'resuming session {active_session_id[:12]}...')
+        # Run boot actions visibly in the TUI (code, not model)
+        if os.environ.get('LATTI_BOOT', '0') == '1':
+            try:
+                from .latti_boot import _run_boot_services, _run_safe
+                svc = _run_boot_services()
+                if svc:
+                    tui.info(svc)
+                # Git status
+                git_status = _run_safe('cd ~/V5/claw-code-agent && git status --short 2>/dev/null')
+                if git_status:
+                    tui.info(f'git: {len(git_status.splitlines())} uncommitted changes')
+                # NBA dashboard one-liner
+                nba = _run_safe(
+                    'curl -s http://localhost:3737/api/dashboard 2>/dev/null | '
+                    'python3 -c "import json,sys; d=json.load(sys.stdin); r=d[\'record\']; '
+                    'print(f\'NBA: ${d[\"balance\"]:.0f} | {r[\"wins\"]}-{r[\"losses\"]}-{r[\"pushes\"]} | {d[\"roi\"]}% ROI\')" 2>/dev/null'
+                )
+                if nba:
+                    tui.info(nba)
+                else:
+                    tui.info('NBA engine: offline')
+            except Exception:
+                pass
     else:
         output_func('# Agent Chat')
         output_func("Enter a prompt. Use '/exit' or '/quit' to stop.")
