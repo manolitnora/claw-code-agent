@@ -20,6 +20,20 @@ from pathlib import Path
 MEMORY_DIR = Path(os.path.expanduser("~/.latti/memory"))
 NN_WEIGHTS_PATH = Path(os.path.expanduser("~/.latti/lattice_nn_weights.json"))
 
+# ── Scar Gate (geometric behavioral pattern matching) ─────────────────
+_scar_gate = None  # lazy import
+
+
+def _get_scar_gate():
+    global _scar_gate
+    if _scar_gate is None:
+        try:
+            from . import scar_gate as sg
+            _scar_gate = sg
+        except Exception as e:
+            _log.debug("scar_gate unavailable: %s", e)
+    return _scar_gate
+
 _log = logging.getLogger(__name__)
 
 # ── Lattice NN for behavioral learning ──────────────────────────────
@@ -109,13 +123,45 @@ DETECTORS: dict[str, tuple[str, str, str, str]] = {
 }
 
 
-def sculpt(response_text: str, agent=None) -> list[str]:
+def check_scars_before_response(prompt: str, agent=None) -> str | None:
+    """Pre-response scar gate. Call BEFORE generating a response.
+
+    Returns a constraint string to inject if a scar is near, or None if clear.
+    """
+    sg = _get_scar_gate()
+    if sg is None:
+        return None
+    features = sg.extract_features(prompt)
+    action, scar, dist = sg.check_scar_gate(features)
+    if action == "block" and scar:
+        constraint = (
+            f"\n\n# SCAR GATE — BLOCK (dist={dist:.3f})\n"
+            f"This prompt matches scar '{scar.id}': {scar.lesson}\n"
+            f"DO NOT repeat this pattern. Apply the correction BEFORE responding."
+        )
+        if agent and hasattr(agent, 'append_system_prompt') and agent.append_system_prompt:
+            agent.append_system_prompt = agent.append_system_prompt + constraint
+        return constraint
+    if action == "warn" and scar:
+        constraint = (
+            f"\n\n# SCAR GATE — WARNING (dist={dist:.3f})\n"
+            f"Near scar '{scar.id}': {scar.lesson}\n"
+            f"Be careful. This situation resembles a past failure."
+        )
+        if agent and hasattr(agent, 'append_system_prompt') and agent.append_system_prompt:
+            agent.append_system_prompt = agent.append_system_prompt + constraint
+        return constraint
+    return None
+
+
+def sculpt(response_text: str, agent=None, prompt: str = "") -> list[str]:
     """Evaluate a response for anti-patterns. Save corrections AND mutate live system prompt.
 
     Args:
         response_text: The agent's output to evaluate.
         agent: The AgentRuntime instance (optional). If provided, its append_system_prompt
                is mutated in real-time — the next response in THIS session already has the fix.
+        prompt: The user's prompt (optional). Used for scar feature extraction.
 
     Returns list of pattern names that fired.
     """
@@ -147,6 +193,10 @@ def sculpt(response_text: str, agent=None) -> list[str]:
             fired.append(name)
             _save_scar(name, instinct, works, trigger, response_text[:200])
 
+    # ── Create geometric scars from fired patterns ──
+    if fired:
+        _create_geometric_scars(fired, prompt, response_text)
+
     # ── Train the lattice NN on this response's behavioral scores ──
     _train_nn_from_sculpt(fired, response_text)
 
@@ -175,6 +225,20 @@ def sculpt(response_text: str, agent=None) -> list[str]:
                 )
 
     return fired
+
+
+def _create_geometric_scars(fired: list[str], prompt: str, response: str) -> None:
+    """When sculpt fires, create geometric scars from the failure for the scar gate."""
+    sg = _get_scar_gate()
+    if sg is None:
+        return
+    features = sg.extract_features(prompt, response)
+    today = date.today().isoformat()
+    for name in fired:
+        if name in DETECTORS:
+            _, instinct, works, _ = DETECTORS[name]
+            scar_id = f"autoscar_{name}_{today}"
+            sg.add_scar(scar_id, works, severity=0.6, features=features)
 
 
 def _train_nn_from_sculpt(fired: list[str], response_text: str) -> None:
