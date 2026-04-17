@@ -93,7 +93,30 @@ def gather_boot_context() -> str:
     if autonomy:
         sections.append(f'# YOUR AUTONOMY LEVELS\n\n{autonomy}')
 
-    # 7. Date and time
+    # 7. Exemplars (reasoning traces from distillation — shows HOW to think)
+    exemplar_dir = LATTI_HOME / 'exemplars'
+    if exemplar_dir.exists():
+        exemplar_files = sorted(exemplar_dir.glob('*.md'))
+        if exemplar_files:
+            exemplar_summaries = []
+            for ef in exemplar_files[:8]:  # cap at 8 to control token count
+                content = _read_safe(ef, limit=300)
+                # Extract just scenario name and score
+                name = ef.stem
+                score_line = ''
+                for line in content.split('\n'):
+                    if line.startswith('score:'):
+                        score_line = line.split(':')[1].strip()
+                        break
+                exemplar_summaries.append(f'- {name} (score: {score_line}) — read {ef} for full reasoning trace')
+            if exemplar_summaries:
+                sections.append(
+                    '# EXEMPLARS (best responses — follow these reasoning patterns)\n\n'
+                    + '\n'.join(exemplar_summaries)
+                    + '\n\nWhen facing a similar prompt, read the exemplar file for the step-by-step approach.'
+                )
+
+    # 8. Date and time
     date_str = _run_safe('date "+%Y-%m-%d %H:%M %Z"')
     if date_str:
         sections.append(f'# NOW: {date_str}')

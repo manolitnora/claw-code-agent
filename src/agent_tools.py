@@ -1112,6 +1112,31 @@ def default_tool_registry() -> dict[str, AgentTool]:
             handler=_lattice_solve,
         ),
         AgentTool(
+            name='self_score',
+            description=(
+                'Score your own response quality. Pass the text of your response '
+                'and get a 0-100 score based on: tool usage (+20), conciseness (+10), '
+                'no anti-patterns (+10), no trailing questions (+10), no permission asking (+10). '
+                'Use this BEFORE finalizing a response to check if you should revise it. '
+                'A score below 60 means the response needs work.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'response_text': {
+                        'type': 'string',
+                        'description': 'The response text to evaluate.',
+                    },
+                    'used_tools': {
+                        'type': 'boolean',
+                        'description': 'Whether tools were called during this response.',
+                    },
+                },
+                'required': ['response_text'],
+            },
+            handler=_self_score,
+        ),
+        AgentTool(
             name='lattice_sector_solve',
             description=(
                 'Decompose an optimization into independent sectors and combine via log-odds product '
@@ -3027,6 +3052,50 @@ def _delegate_agent_placeholder(
     raise ToolExecutionError(
         'delegate_agent must be handled by the runtime and is not available as a standalone tool handler'
     )
+
+
+def _self_score(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    """Score own response quality — reward model for self-evaluation."""
+    text = arguments.get('response_text', '')
+    used_tools = arguments.get('used_tools', False)
+    score = 50  # baseline
+
+    if used_tools:
+        score += 20
+
+    # Conciseness: under 15 lines
+    lines = [l for l in text.split('\n') if l.strip()]
+    if len(lines) <= 15:
+        score += 10
+
+    # Anti-pattern checks
+    import re
+    text_lower = text.lower()
+    if re.search(r'great question|that.s interesting|as an ai|i find that', text_lower):
+        score -= 15
+    if text.rstrip().endswith('?'):
+        score -= 10
+    if re.search(r'shall i|should i|would you like|do you want|can i proceed', text_lower):
+        score -= 10
+    if re.search(r'what would you|standing by|your call|let me know', text_lower):
+        score -= 10
+
+    # Bonus for action-oriented language
+    if re.search(r'done|fixed|saved|created|computed|result', text_lower):
+        score += 10
+
+    score = max(0, min(100, score))
+
+    verdict = 'GOOD' if score >= 70 else 'REVISE' if score >= 50 else 'POOR'
+    feedback = []
+    if not used_tools:
+        feedback.append('Consider using a tool instead of just explaining')
+    if len(lines) > 15:
+        feedback.append(f'Too verbose ({len(lines)} lines, aim for <15)')
+    if score < 70:
+        feedback.append('Check for anti-patterns: filler, trailing questions, permission asking')
+
+    return f'Score: {score}/100 ({verdict})\n' + ('\n'.join(f'- {f}' for f in feedback) if feedback else 'No issues detected.')
 
 
 def _lattice_solve(
