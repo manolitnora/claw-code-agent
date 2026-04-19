@@ -711,7 +711,7 @@ Done:
 Missing major utility categories:
 
 - [ ] Shell utilities (`utils/bash/`, `utils/shell/`, `Shell.ts`, `ShellCommand.ts`)
-- [ ] Git operations (`utils/git.ts`, `utils/gitDiff.ts`, `utils/gitSettings.ts`, `utils/commitAttribution.ts`)
+- [ ] Git operations (`utils/git.ts`, `utils/gitDiff.ts`, `utils/gitSettings.ts`, `utils/commitAttribution.ts`) — partial: `findGitRoot`, `normalizeGitRemoteUrl`, `getRepoRemoteHash`, and `shouldIncludeGitInstructions` ported in `src/git_utils.py`
 - [ ] File operations (`utils/file.ts`, `utils/fileRead.ts`, `utils/fileHistory.ts`, `utils/fileStateCache.ts`, `utils/fsOperations.ts`, `utils/ripgrep.ts`, `utils/glob.ts`)
 - [ ] AI/Model utilities (`utils/modelCost.ts`, `utils/model/`, `utils/context.ts`, `utils/queryContext.ts`) — partial: modelCost ported in `src/model_cost.py`
 - [ ] Config/Settings (`utils/config.ts`, `utils/settings/`)
