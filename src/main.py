@@ -823,6 +823,14 @@ def _speak_response(text: str) -> None:
     if not snippet or len(snippet) < 10:
         return
 
+    # Guard 4: Reject incomplete sentences (fragments, trailing ellipsis, setup without landing)
+    # Complete sentences end with . ! ? and don't trail off with ... or [incomplete]
+    if snippet.endswith(('...', '—', '–', '—\n', '[', '(')):
+        return
+    if not any(snippet.endswith(p) for p in '.!?'):
+        # If no terminal punctuation, reject (likely a fragment or setup)
+        return
+
     # Kill previous auto-speak only (not LLM-initiated speaks)
     if _last_speak_proc is not None:
         try:
