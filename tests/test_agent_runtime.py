@@ -318,6 +318,27 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(result.tool_calls, 0)
         self.assertIn('# Permissions', result.final_output)
 
+    def test_clear_runtime_state_drops_session_env_vars(self) -> None:
+        from src.session_env_vars import (
+            clear_session_env_vars,
+            get_session_env_vars,
+            set_session_env_var,
+        )
+
+        clear_session_env_vars()
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                agent = LocalCodingAgent(
+                    model_config=ModelConfig(model='Qwen/Qwen3-Coder-30B-A3B-Instruct'),
+                    runtime_config=AgentRuntimeConfig(cwd=Path(tmp_dir)),
+                )
+                set_session_env_var('CLAW_CLEAR_TEST', 'before')
+                self.assertEqual(get_session_env_vars()['CLAW_CLEAR_TEST'], 'before')
+                agent.clear_runtime_state()
+                self.assertNotIn('CLAW_CLEAR_TEST', get_session_env_vars())
+        finally:
+            clear_session_env_vars()
+
     def test_agent_persists_session_and_can_resume(self) -> None:
         responses = [
             {

@@ -67,6 +67,7 @@ from .team_runtime import TeamRuntime
 from .tokenizer_runtime import describe_token_counter
 from .workflow_runtime import WorkflowRuntime
 from .worktree_runtime import WorktreeRuntime
+from .session_env_vars import clear_session_env_vars
 from .session_store import (
     StoredAgentSession,
     load_agent_session,
@@ -249,6 +250,8 @@ class LocalCodingAgent:
         self.resume_source_session_id = None
         if self.plugin_runtime is not None:
             self.plugin_runtime.restore_session_state({})
+        # Mirror commands/clear/caches.ts: drop session-scoped env vars on /clear.
+        clear_session_env_vars()
 
     def build_prompt_context(self, scratchpad_directory: Path | None = None):
         return build_prompt_context(
