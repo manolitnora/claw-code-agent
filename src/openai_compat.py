@@ -12,6 +12,7 @@ from .agent_types import (
     ToolCall,
     UsageStats,
 )
+from .cost_ledger import log_api_call
 
 
 class OpenAICompatError(RuntimeError):
@@ -172,12 +173,18 @@ class OpenAICompatClient:
         if finish_reason is not None and not isinstance(finish_reason, str):
             finish_reason = str(finish_reason)
 
+        usage = _parse_usage(payload.get('usage'))
+        
+        # Log API call cost
+        model = model_override or self.config.model
+        log_api_call(model, usage)
+
         return AssistantTurn(
             content=content,
             tool_calls=tuple(tool_calls),
             finish_reason=finish_reason,
             raw_message=message,
-            usage=_parse_usage(payload.get('usage')),
+            usage=usage,
         )
 
     def stream(

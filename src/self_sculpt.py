@@ -120,6 +120,20 @@ DETECTORS: dict[str, tuple[str, str, str, str]] = {
         "If you didn't run it this session with your tools, say 'the parent system found' — cite, don't claim.",
         "Any time referencing data or results.",
     ),
+    "giving_up_midtask": (
+        # Phrases that mark a chatbot-giving-up instead of agent-improvising
+        r"(?i)(i don'?t have (access|the ability|a way)|this (would )?require(s|d) installing|"
+        r"i can'?t do [^.]*? without|"
+        r"(one option|another option)[^.]*? would be[^.]*?\?|"
+        r"should i (proceed|continue|install|do)|"
+        r"let me know if you (want|would like)|"
+        r"i'?m unable to [^.]*? please)",
+        "Stop and ask the user to install/enable something instead of inspecting and improvising.",
+        "Chain the moves first: inspect the artifact (file, head, ls), look for a local converter, "
+        "check env for API keys, call a remote service for the last mile. Only AFTER 2-3 adjacent paths "
+        "fail, surface the block WITH the chain of attempts. The Marrakech 9-second standard.",
+        "Any moment you're about to say 'I don't have X' or 'should I install Y' or 'let me know if you want'.",
+    ),
 }
 
 

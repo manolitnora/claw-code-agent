@@ -25,6 +25,7 @@ from .agent_prompting import (
 )
 from .agent_session import AgentSessionState
 from .agent_slash_commands import preprocess_slash_command
+from .response_gate import apply_response_gate
 from .agent_tools import (
     AgentTool,
     build_tool_context,
@@ -337,6 +338,9 @@ class LocalCodingAgent:
             self.plugin_runtime.restore_session_state({})
         session_id = uuid4().hex
         scratchpad_directory = self._ensure_scratchpad_directory(session_id)
+        # Pre-response: inject any claim-matches into system prompt so echoes
+        # of prior claims are recognized structurally, not re-reasoned.
+        self._inject_claim_matches(prompt)
         result = self._run_prompt(
             prompt,
             base_session=None,
@@ -347,6 +351,31 @@ class LocalCodingAgent:
         self._accumulate_usage(result)
         self._finalize_managed_agent(result)
         return result
+
+    def _inject_claim_matches(self, prompt: str) -> None:
+        """Pre-response hook: if the incoming prompt echoes prior claims,
+        append the matches to append_system_prompt so the LLM sees the echo
+        before responding. Best-effort; no-op without Latti."""
+        import sys
+        from pathlib import Path
+        try:
+            latti_home = Path.home() / '.latti'
+            if not (latti_home / 'last_session').is_file():
+                return
+            if not prompt or len(prompt) < 20:
+                return
+            scripts = latti_home / 'scripts'
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from claims import match_for_injection  # type: ignore[import-not-found]
+            injection = match_for_injection(prompt)
+            if not injection:
+                return
+            # Append to the system prompt for this turn
+            existing = self.append_system_prompt or ''
+            self.append_system_prompt = existing + injection
+        except Exception:
+            pass
 
     def resume(self, prompt: str, stored_session: StoredAgentSession) -> AgentRunResult:
         self.managed_agent_id = None
@@ -780,8 +809,10 @@ class LocalCodingAgent:
                     )
                     last_content = ''.join(assistant_response_segments)
                     continue
+                final_output = ''.join(assistant_response_segments)
+                final_output = apply_response_gate(final_output)
                 result = AgentRunResult(
-                    final_output=''.join(assistant_response_segments),
+                    final_output=final_output,
                     turns=turn_index,
                     tool_calls=tool_calls,
                     transcript=session.transcript(),
@@ -3890,6 +3921,111 @@ class LocalCodingAgent:
         """Add a run's usage to the cumulative session totals."""
         self.cumulative_usage = self.cumulative_usage + result.usage
         self.cumulative_cost_usd += result.total_cost_usd
+        self._emit_cost_ledger(result)
+        self._emit_session_turn(result)
+        self._emit_claims(result)
+
+    def _emit_claims(self, result: AgentRunResult) -> None:
+        """Extract substantive claims from final_output and register them so
+        future sessions can recognize echoes of the AI's own positions
+        without re-deriving from scratch. Best-effort; no-op without Latti."""
+        import sys
+        from pathlib import Path
+        try:
+            latti_home = Path.home() / '.latti'
+            if not (latti_home / 'last_session').is_file():
+                return
+            scripts = latti_home / 'scripts'
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from claims import register_from_response  # type: ignore[import-not-found]
+            final_output = getattr(result, 'final_output', '') or ''
+            if not final_output or len(final_output) < 80:
+                return
+            register_from_response(
+                final_output,
+                session_id=os.environ.get('LATTI_SESSION_ID'),
+            )
+        except Exception:
+            pass
+
+    def _emit_cost_ledger(self, result: AgentRunResult) -> None:
+        """Append a cost-ledger entry to Latti's cost-ledger.jsonl.
+
+        Opt-in via LATTI_COST_LEDGER env var pointing to the ledger file,
+        or default location ~/.latti/memory/cost-ledger.jsonl.
+        Emission is best-effort; failures are swallowed to avoid disrupting runs.
+        """
+        import os
+        import json
+        import time
+        from pathlib import Path
+
+        try:
+            # Opt-in: default to ~/.latti/memory/cost-ledger.jsonl if dir exists
+            default_ledger = Path.home() / '.latti' / 'memory' / 'cost-ledger.jsonl'
+            ledger_path = os.environ.get('LATTI_COST_LEDGER')
+            if ledger_path:
+                ledger = Path(ledger_path)
+            elif default_ledger.parent.is_dir():
+                ledger = default_ledger
+            else:
+                return  # No latti install → no-op
+
+            usage = result.usage
+            entry = {
+                'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                'model': getattr(self.model_config, 'model', 'unknown'),
+                'tokens_in': int(getattr(usage, 'input_tokens', 0) or 0),
+                'tokens_out': int(getattr(usage, 'output_tokens', 0) or 0),
+                'cache_creation': int(getattr(usage, 'cache_creation_input_tokens', 0) or 0),
+                'cache_read': int(getattr(usage, 'cache_read_input_tokens', 0) or 0),
+                'cost_usd': float(getattr(result, 'total_cost_usd', 0.0) or 0.0),
+                'session_id': os.environ.get('LATTI_SESSION_ID', 'unknown'),
+            }
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            with ledger.open('a', encoding='utf-8') as fh:
+                fh.write(json.dumps(entry, separators=(',', ':')) + '\n')
+        except Exception:
+            # Best-effort logging: never crash the run on ledger failure
+            pass
+
+    def _emit_session_turn(self, result: AgentRunResult) -> None:
+        """Append a turn record to Latti's session_work.md via session_context.py.
+
+        Runs only when a Latti install is detected (~/.latti/last_session exists).
+        Best-effort: failures are swallowed to avoid disrupting runs.
+        """
+        import sys
+        from pathlib import Path
+
+        try:
+            latti_home = Path.home() / '.latti'
+            if not (latti_home / 'last_session').is_file():
+                return  # Not running under Latti → no-op
+
+            if str(latti_home) not in sys.path:
+                sys.path.insert(0, str(latti_home))
+            from session_context import append_turn  # type: ignore[import-not-found]
+
+            # Summarize this turn concisely
+            turn_num = int(getattr(result, 'turns', 0) or 0)
+            tool_calls = int(getattr(result, 'tool_calls', 0) or 0)
+            stop_reason = getattr(result, 'stop_reason', None) or 'ok'
+            final_output = getattr(result, 'final_output', '') or ''
+            # Action: full output (no truncation) with newlines collapsed
+            summary = final_output.strip().replace('\n', ' ')
+            if not summary:
+                summary = f'({tool_calls} tool calls)'
+            note = f'turns={turn_num} tools={tool_calls}'
+            # Use cumulative turn counter as the visible turn number so each run
+            # is its own entry even if internal turns==0 on fast paths
+            if not hasattr(self, '_latti_turn_counter'):
+                self._latti_turn_counter = 0
+            self._latti_turn_counter += 1
+            append_turn(self._latti_turn_counter, summary, stop_reason, note)
+        except Exception:
+            pass
 
     def _refresh_runtime_views_for_tool_result(
         self,
