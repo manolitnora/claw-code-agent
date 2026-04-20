@@ -614,23 +614,41 @@ def _run_agent_chat_loop(
                 _context_limit = 192_000
                 _over_budget = _stored_cost >= _safety_ceiling and agent.budget_config.max_total_cost_usd is None
                 _over_context = _stored_input_tokens > _context_limit
-                if _over_budget or _over_context:
+                # Cost overruns drop the session — they signal a real
+                # hard limit the user has to approve spending past.
+                # Context overruns DO NOT drop the session anymore —
+                # they trigger in-place compaction that preserves turn
+                # count, cost accounting, and the tail of the conversation.
+                # The old forced-fresh path was the dominant cause of
+                # "Latti forgets what was talked about" (S120 bug report).
+                if _over_budget:
                     if use_tui:
-                        # Name the actual trigger. The old message always said
-                        # "over budget" even when cost was nowhere near cap —
-                        # it confused the user into thinking $0.56 triggered
-                        # a reset when really the 180K-token context did.
-                        if _over_context:
-                            _reason = f'context {_stored_input_tokens:,} tok > {_context_limit:,}'
-                        else:
-                            _reason = f'cost ${_stored_cost:.2f} >= ${_safety_ceiling:.2f}'
-                        tui.info(f'session {active_session_id[:12]} reset — {_reason} — starting fresh')
+                        tui.info(
+                            f'session {active_session_id[:12]} reset — '
+                            f'cost ${_stored_cost:.2f} >= ${_safety_ceiling:.2f} '
+                            f'— starting fresh'
+                        )
                     active_session_id = None
                     stored_session = None
                     _persist_last_session(None)
                     if use_tui:
                         tui.thinking_start()
                     result = agent.run(user_input)
+                    if use_tui:
+                        tui.thinking_clear()
+                elif _over_context:
+                    from .session_compact import compact_stored_session
+                    compacted, dropped = compact_stored_session(stored_session)
+                    if use_tui and dropped > 0:
+                        new_tokens = int(compacted.usage.get('input_tokens', 0) or 0)
+                        tui.info(
+                            f'session {active_session_id[:12]} compacted — '
+                            f'{_stored_input_tokens:,} tok → {new_tokens:,} tok '
+                            f'({dropped} earliest messages elided; continuity preserved)'
+                        )
+                    if use_tui:
+                        tui.thinking_start()
+                    result = agent.resume(user_input, compacted)
                     if use_tui:
                         tui.thinking_clear()
                 else:
