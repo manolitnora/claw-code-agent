@@ -104,6 +104,44 @@ class GuiServerTests(unittest.TestCase):
             self.assertIn('/help', payload['final_output'])
             self.assertIn('total_tokens', payload['usage'])
 
+    def test_chat_expands_pasted_contents_before_dispatch(self) -> None:
+        # Capture the prompt that actually reaches LocalCodingAgent.run so the
+        # test discriminates between "expansion happened" and "the field was
+        # silently dropped".  Slash commands wouldn't observe the difference,
+        # so we monkey-patch run() to short-circuit.
+        captured: list[str] = []
+
+        from src.agent_types import AgentRunResult, UsageStats
+
+        with tempfile.TemporaryDirectory() as d:
+            client, state = _build_client(Path(d))
+
+            def fake_run(prompt: str, **kwargs: object) -> AgentRunResult:
+                captured.append(prompt)
+                return AgentRunResult(
+                    final_output='ok',
+                    turns=1,
+                    tool_calls=0,
+                    transcript=[{'role': 'user', 'content': prompt}],
+                    session_id='sess-paste-test',
+                    usage=UsageStats(),
+                    total_cost_usd=0.0,
+                    stop_reason='stop',
+                )
+
+            state.agent.run = fake_run  # type: ignore[assignment]
+            response = client.post(
+                '/api/chat',
+                json={
+                    'prompt': 'before [Pasted text #1] after',
+                    'pasted_contents': {
+                        '1': {'type': 'text', 'content': 'EXPANDED_BLOB'},
+                    },
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(captured, ['before EXPANDED_BLOB after'])
+
     def test_chat_rejects_blank_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             client, _ = _build_client(Path(d))

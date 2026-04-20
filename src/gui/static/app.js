@@ -11,7 +11,16 @@ const State = {
   activeSessionId: null,   // the session we will resume on next send
   isBusy: false,
   paletteMode: null,       // "slash" | "skills" | null
+  // Pasted content keyed by ref id.  Cleared after each send.  Mirrors the
+  // npm front-end's `[Pasted text #N]` collapsing — large pastes never sit
+  // inline in the textarea, only the placeholder ref does.
+  pastedContents: {},
+  nextPasteId: 1,
 };
+
+// Paste larger than this many characters gets collapsed to a [Pasted text #N]
+// reference.  500 is what the npm front-end uses for its truncation threshold.
+const PASTE_COLLAPSE_THRESHOLD = 500;
 
 // ---------------------------------------------------------------------------
 // DOM refs
@@ -36,6 +45,7 @@ const els = {
   paletteSearch: $("#palette-search"),
   paletteList: $("#palette-list"),
   paletteClose: $("#palette-close"),
+  pasteChips: $("#paste-chips"),
 };
 
 // ---------------------------------------------------------------------------
@@ -327,6 +337,7 @@ async function openSession(sessionId) {
 function newSession() {
   State.activeSessionId = null;
   clearChat();
+  clearPasteStash();
   renderSessions();
   setStatus("ready", "New chat");
   els.input.focus();
@@ -436,6 +447,83 @@ function renderPalette(filter) {
 }
 
 // ---------------------------------------------------------------------------
+// Paste-ref handling
+// ---------------------------------------------------------------------------
+function countNewlines(text) {
+  // Match npm's getPastedTextRefNumLines: count of \r\n / \r / \n.
+  const m = text.match(/\r\n|\r|\n/g);
+  return m ? m.length : 0;
+}
+
+function formatPastedRef(id, lines) {
+  return lines === 0 ? `[Pasted text #${id}]` : `[Pasted text #${id} +${lines} lines]`;
+}
+
+function renderPasteChips() {
+  els.pasteChips.innerHTML = "";
+  const ids = Object.keys(State.pastedContents)
+    .map(Number)
+    .sort((a, b) => a - b);
+  if (!ids.length) {
+    els.pasteChips.hidden = true;
+    return;
+  }
+  els.pasteChips.hidden = false;
+  for (const id of ids) {
+    const entry = State.pastedContents[id];
+    const chip = document.createElement("span");
+    chip.className = "paste-chip";
+    chip.innerHTML = `
+      <span class="paste-chip-label">[Pasted text #${id}]</span>
+      <span class="paste-chip-meta">${entry.lines} line${entry.lines === 1 ? "" : "s"} · ${entry.content.length} chars</span>
+      <button type="button" class="paste-chip-remove" title="Remove">✕</button>
+    `;
+    chip.querySelector(".paste-chip-remove").addEventListener("click", () => {
+      // Drop both the stash entry and any inline ref so a later send can't
+      // refer to a paste the server doesn't have.
+      delete State.pastedContents[id];
+      const ref = formatPastedRef(id, entry.lines);
+      els.input.value = els.input.value.split(ref).join("");
+      autoSizeInput();
+      renderPasteChips();
+      els.input.focus();
+    });
+    els.pasteChips.appendChild(chip);
+  }
+}
+
+function clearPasteStash() {
+  State.pastedContents = {};
+  State.nextPasteId = 1;
+  renderPasteChips();
+}
+
+function handlePaste(ev) {
+  const cd = ev.clipboardData;
+  if (!cd) return;
+  const text = cd.getData("text/plain");
+  if (!text || text.length < PASTE_COLLAPSE_THRESHOLD) return;
+  ev.preventDefault();
+
+  const id = State.nextPasteId++;
+  const lines = countNewlines(text);
+  State.pastedContents[id] = { type: "text", content: text, lines };
+  const ref = formatPastedRef(id, lines);
+
+  // Splice at the current selection so the placeholder lands where the user
+  // pasted, just like a normal paste would.
+  const ta = els.input;
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? ta.value.length;
+  ta.value = ta.value.slice(0, start) + ref + ta.value.slice(end);
+  const caret = start + ref.length;
+  ta.setSelectionRange(caret, caret);
+
+  autoSizeInput();
+  renderPasteChips();
+}
+
+// ---------------------------------------------------------------------------
 // Composer
 // ---------------------------------------------------------------------------
 function autoSizeInput() {
@@ -452,9 +540,14 @@ async function send() {
   autoSizeInput();
   setBusy(true);
   try {
+    const pastedContents = {};
+    for (const [id, entry] of Object.entries(State.pastedContents)) {
+      pastedContents[id] = { type: entry.type, content: entry.content };
+    }
     const payload = {
       prompt,
       resume_session_id: State.activeSessionId || null,
+      pasted_contents: pastedContents,
     };
     const data = await apiPost("/api/chat", payload);
     if (data.error) {
@@ -470,6 +563,7 @@ async function send() {
         (data.usage?.total_tokens
           ? `  ·  tokens: ${data.usage.total_tokens}`
           : "");
+      clearPasteStash();
       await loadSessions();
     }
   } catch (e) {
@@ -518,6 +612,7 @@ function renderRunResult(data) {
 // ---------------------------------------------------------------------------
 function bind() {
   els.input.addEventListener("input", autoSizeInput);
+  els.input.addEventListener("paste", handlePaste);
   els.input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();

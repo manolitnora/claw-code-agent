@@ -57,6 +57,7 @@
 | 🆕 | **Prompt Budget Preflight** | Preflight prompt-length validation, token-budget reporting, and auto-compact/context collapse before backend failures |
 | 🆕 | **LSP Runtime** | Local LSP-style code intelligence for definitions, references, hover, symbols, call hierarchy, and diagnostics |
 | 🆕 | **Local Web GUI** | Browser-based chat UI via `python -m src.gui` — modern dark theme, slash command palette, session browser, settings panel |
+| 🆕 | **Pasted-Content Refs** | Pastes ≥500 chars into the GUI composer collapse to `[Pasted text #N +M lines]` chips and re-expand server-side before the agent runs |
 | 🆕 | **Daemon Commands** | Local `daemon start/ps/logs/attach/kill` wrapper over background agent sessions |
 | 🆕 | **Background Sessions** | Local `agent-bg`, `agent-ps`, `agent-logs`, `agent-attach`, and `agent-kill` flows |
 | 🆕 | **Testing Guide** | Comprehensive [TESTING_GUIDE.md](TESTING_GUIDE.md) with commands for every feature |
@@ -749,6 +750,17 @@ The GUI surfaces:
 - slash command and skill pickers (`/` and `★` buttons, or `Cmd/Ctrl+K`)
 - live settings panel (model, base URL, working dir, permissions)
 - usage / cost meta in the composer footer
+- pasted-content collapsing — see below
+
+### Paste large content
+
+Paste anything ≥500 characters into the composer (a logfile, a stack trace, an entire file) and the GUI replaces it with a short reference like `[Pasted text #1 +42 lines]`, plus a chip above the textarea showing `📎 [Pasted text #1] · 42 lines · 1894 chars · ✕`.
+
+- The reference stays editable — type around it, delete it, or duplicate it; whatever survives at send-time is what gets expanded.
+- The full content is held in the browser only and shipped with the next `/api/chat` request as `pasted_contents`.
+- The server re-splices the original text back in before the agent runs, so the model sees the full payload — never the placeholder.
+- The chip's `✕` button drops both the content stash and any inline ref so it can't accidentally come along.
+- The stash clears after every successful send and when you click `+ New chat`.
 
 > **Note:** The GUI uses [FastAPI](https://fastapi.tiangolo.com/) and [Uvicorn](https://www.uvicorn.org/) under the hood. These get installed automatically if you install the package via `pip install -e .`. The core Python agent runtime itself remains dependency-free.
 

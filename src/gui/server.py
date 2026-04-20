@@ -25,6 +25,7 @@ from ..agent_types import (
     ModelConfig,
 )
 from ..bundled_skills import get_bundled_skills
+from ..paste_refs import PastedContent, expand_pasted_text_refs
 from ..session_store import (
     DEFAULT_AGENT_SESSION_DIR,
     StoredAgentSession,
@@ -136,9 +137,24 @@ class AgentState:
 # Request models
 # ---------------------------------------------------------------------------
 
+class PastedContentPayload(BaseModel):
+    """JSON shape for an entry in :class:`ChatRequest.pasted_contents`.
+
+    Mirrors :class:`src.paste_refs.PastedContent` minus the id (the dict key
+    in the parent payload).  ``type`` is constrained to ``text`` for now —
+    image expansion isn't wired into the agent runtime yet.
+    """
+
+    type: str = Field(default='text')
+    content: str
+    media_type: str | None = None
+    filename: str | None = None
+
+
 class ChatRequest(BaseModel):
     prompt: str = Field(min_length=1)
     resume_session_id: str | None = None
+    pasted_contents: dict[int, PastedContentPayload] = Field(default_factory=dict)
 
 
 class StateUpdate(BaseModel):
@@ -257,6 +273,19 @@ def create_app(state: AgentState) -> FastAPI:
         prompt = request.prompt.strip()
         if not prompt:
             raise HTTPException(status_code=400, detail='Prompt is empty')
+
+        if request.pasted_contents:
+            store = {
+                ref_id: PastedContent(
+                    id=ref_id,
+                    type=payload.type,
+                    content=payload.content,
+                    media_type=payload.media_type,
+                    filename=payload.filename,
+                )
+                for ref_id, payload in request.pasted_contents.items()
+            }
+            prompt = expand_pasted_text_refs(prompt, store)
 
         def _run() -> dict[str, Any]:
             with state.lock():

@@ -609,6 +609,56 @@ body {
   color: var(--text-muted);
 }
 
+.paste-chips {
+  max-width: 820px;
+  margin: 0 auto 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.paste-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent-soft);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 3px 4px 3px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.paste-chip-label {
+  font-family: var(--font-mono);
+}
+
+.paste-chip-meta {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.paste-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 999px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  padding: 0;
+}
+
+.paste-chip-remove:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
 /* Palette */
 .palette {
   position: fixed;
