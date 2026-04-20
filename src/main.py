@@ -607,12 +607,24 @@ def _run_agent_chat_loop(
                     _stored_usage.get('input_tokens', 0) if isinstance(_stored_usage, dict)
                     else getattr(_stored_usage, 'input_tokens', 0)
                 )
-                _context_limit = 180_000  # leave 20K headroom below 200K model limit
+                # 200K is the Claude Sonnet context limit. Leave 8K headroom
+                # for the new-turn message + tool preambles. Raised from 180K
+                # 2026-04-20 — most fresh-starts were context pressure, not
+                # cost. Extra room = more turns before forced-fresh.
+                _context_limit = 192_000
                 _over_budget = _stored_cost >= _safety_ceiling and agent.budget_config.max_total_cost_usd is None
                 _over_context = _stored_input_tokens > _context_limit
                 if _over_budget or _over_context:
                     if use_tui:
-                        tui.info(f'session {active_session_id[:12]} over budget (${_stored_cost:.2f}) — starting fresh')
+                        # Name the actual trigger. The old message always said
+                        # "over budget" even when cost was nowhere near cap —
+                        # it confused the user into thinking $0.56 triggered
+                        # a reset when really the 180K-token context did.
+                        if _over_context:
+                            _reason = f'context {_stored_input_tokens:,} tok > {_context_limit:,}'
+                        else:
+                            _reason = f'cost ${_stored_cost:.2f} >= ${_safety_ceiling:.2f}'
+                        tui.info(f'session {active_session_id[:12]} reset — {_reason} — starting fresh')
                     active_session_id = None
                     stored_session = None
                     _persist_last_session(None)
