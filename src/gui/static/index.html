@@ -173,6 +173,7 @@
             <button class="view-tab" data-view="remote" type="button">Remote</button>
             <button class="view-tab" data-view="mcp" type="button">MCP</button>
             <button class="view-tab" data-view="plugins" type="button">Plugins</button>
+            <button class="view-tab" data-view="ask" type="button">Ask</button>
           </div>
         </div>
         <div class="topbar-right">
@@ -205,6 +206,31 @@
           <span id="usage-meta"></span>
         </div>
       </footer>
+
+      <section id="ask-view" class="tasks-view view" data-view-name="ask" hidden>
+        <div class="tasks-toolbar">
+          <h2>Ask-user queue</h2>
+          <button id="ask-clear-history" class="btn-ghost" type="button">Clear history</button>
+          <button id="ask-refresh" class="btn-ghost" type="button" title="Refresh">⟳</button>
+        </div>
+        <form id="ask-enqueue-form" class="tasks-create" style="flex-wrap:wrap; gap:8px;">
+          <input type="text" name="question" placeholder="Question (e.g. 'Are you sure?')" autocomplete="off" />
+          <input type="text" name="answer" placeholder="Answer (required)" autocomplete="off" required />
+          <select name="match">
+            <option value="exact">exact</option>
+            <option value="contains">contains</option>
+          </select>
+          <label class="toggle">
+            <input type="checkbox" name="consume" checked />
+            <span>Consume on use</span>
+          </label>
+          <button type="submit" class="btn-primary">Enqueue</button>
+        </form>
+        <h3 class="worktree-history-title">Queued answers</h3>
+        <div id="ask-queue" class="history-list"></div>
+        <h3 class="worktree-history-title">History</h3>
+        <div id="ask-history" class="history-list"></div>
+      </section>
 
       <section id="plugins-view" class="tasks-view view" data-view-name="plugins" hidden>
         <div class="tasks-toolbar">

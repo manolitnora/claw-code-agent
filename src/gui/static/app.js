@@ -108,6 +108,11 @@ const els = {
   mcpIncludeRemote: $("#mcp-include-remote"),
   pluginsGrid: $("#plugins-grid"),
   pluginsRefresh: $("#plugins-refresh"),
+  askEnqueueForm: $("#ask-enqueue-form"),
+  askQueue: $("#ask-queue"),
+  askHistory: $("#ask-history"),
+  askRefresh: $("#ask-refresh"),
+  askClearHistory: $("#ask-clear-history"),
 };
 
 const BgState = { current: null, status: null };
@@ -907,6 +912,101 @@ function setView(view) {
   if (view === "remote") loadRemote();
   if (view === "mcp") loadMcp();
   if (view === "plugins") loadPlugins();
+  if (view === "ask") loadAskUser();
+}
+
+// ---------------------------------------------------------------------------
+// Ask-user view
+// ---------------------------------------------------------------------------
+function renderAsk(payload) {
+  els.askQueue.innerHTML = "";
+  if (!payload.queued_answers.length) {
+    els.askQueue.innerHTML = `<div class="empty-state">No queued answers — the next ask-user prompt will require interactive mode.</div>`;
+  } else {
+    payload.queued_answers.forEach((entry, idx) => {
+      const row = document.createElement("div");
+      row.className = "history-row";
+      row.innerHTML = `
+        <span class="history-when">#${idx}</span>
+        <span class="history-tool">${escapeHtml(entry.match)}</span>
+        <span class="history-detail">Q: ${escapeHtml(entry.question || "(any)")}<br/>A: ${escapeHtml(entry.answer)}</span>
+        <span class="history-session"><button data-act="del">Remove</button></span>
+      `;
+      row.querySelector('[data-act="del"]').addEventListener("click", () => removeAskQueued(idx));
+      els.askQueue.appendChild(row);
+    });
+  }
+
+  els.askHistory.innerHTML = "";
+  if (!payload.history.length) {
+    els.askHistory.innerHTML = `<div class="empty-state">No ask-user history yet.</div>`;
+  } else {
+    for (const entry of [...payload.history].reverse()) {
+      const row = document.createElement("div");
+      row.className = "history-row";
+      const when = entry.created_at || "?";
+      row.innerHTML = `
+        <span class="history-when">${escapeHtml(when)}</span>
+        <span class="history-tool">${escapeHtml(entry.source || "?")}</span>
+        <span class="history-detail">Q: ${escapeHtml(entry.question || "")}<br/>A: ${escapeHtml(entry.answer || "")}</span>
+        <span class="history-session"></span>
+      `;
+      els.askHistory.appendChild(row);
+    }
+  }
+}
+
+async function loadAskUser() {
+  try {
+    renderAsk(await apiGet("/api/ask-user"));
+  } catch (e) {
+    setStatus("error", `ask: ${e.message}`);
+  }
+}
+
+async function enqueueAsk(ev) {
+  ev.preventDefault();
+  const fd = new FormData(els.askEnqueueForm);
+  const body = {
+    answer: (fd.get("answer") || "").trim(),
+    question: (fd.get("question") || "").trim() || null,
+    match: (fd.get("match") || "exact"),
+    consume: !!els.askEnqueueForm.consume.checked,
+  };
+  if (!body.answer) return;
+  try {
+    const data = await apiPost("/api/ask-user/queue", body);
+    renderAsk(data);
+    els.askEnqueueForm.reset();
+    els.askEnqueueForm.consume.checked = true;
+    setStatus("ready", "Queued");
+  } catch (e) {
+    setStatus("error", `ask: ${e.message}`);
+  }
+}
+
+async function removeAskQueued(idx) {
+  try {
+    const r = await fetch(`/api/ask-user/queue/${idx}`, { method: "DELETE" });
+    const data = await r.json();
+    if (!r.ok) {
+      setStatus("error", data.detail || `${r.status}`);
+      return;
+    }
+    renderAsk(data);
+  } catch (e) {
+    setStatus("error", `ask: ${e.message}`);
+  }
+}
+
+async function clearAskHistory() {
+  if (!confirm("Clear ask-user history?")) return;
+  try {
+    renderAsk(await apiPost("/api/ask-user/clear-history", {}));
+    setStatus("ready", "Cleared");
+  } catch (e) {
+    setStatus("error", `ask: ${e.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1872,6 +1972,9 @@ function bind() {
   if (els.mcpRefresh) els.mcpRefresh.addEventListener("click", loadMcp);
   if (els.mcpIncludeRemote) els.mcpIncludeRemote.addEventListener("change", loadMcp);
   if (els.pluginsRefresh) els.pluginsRefresh.addEventListener("click", loadPlugins);
+  if (els.askEnqueueForm) els.askEnqueueForm.addEventListener("submit", enqueueAsk);
+  if (els.askRefresh) els.askRefresh.addEventListener("click", loadAskUser);
+  if (els.askClearHistory) els.askClearHistory.addEventListener("click", clearAskHistory);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !els.palette.classList.contains("hidden")) {
       closePalette();

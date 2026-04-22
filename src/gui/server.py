@@ -40,6 +40,7 @@ from ..session_store import (
     load_agent_session,
 )
 from .account_routes import create_account_router
+from .ask_user_routes import create_ask_user_router
 from .background_routes import create_background_router
 from .mcp_routes import create_mcp_router
 from .memory_routes import MemoryPathContext, create_memory_router
@@ -478,6 +479,12 @@ def create_app(state: AgentState) -> FastAPI:
     )
     app.include_router(
         create_plugins_router(
+            lambda: state.cwd,
+            lambda: state.additional_working_directories,
+        )
+    )
+    app.include_router(
+        create_ask_user_router(
             lambda: state.cwd,
             lambda: state.additional_working_directories,
         )
