@@ -164,6 +164,7 @@
             <button class="view-tab active" data-view="chat" type="button">Chat</button>
             <button class="view-tab" data-view="tasks" type="button">Tasks</button>
             <button class="view-tab" data-view="plan" type="button">Plan</button>
+            <button class="view-tab" data-view="memory" type="button">Memory</button>
           </div>
         </div>
         <div class="topbar-right">
@@ -196,6 +197,30 @@
           <span id="usage-meta"></span>
         </div>
       </footer>
+
+      <section id="memory-view" class="tasks-view view view-memory" hidden>
+        <div class="tasks-toolbar">
+          <h2>Memory</h2>
+          <div style="display:flex; gap:6px;">
+            <button id="memory-new" class="btn-ghost" type="button">+ New file</button>
+            <button id="memory-refresh" class="btn-ghost" type="button" title="Refresh">⟳</button>
+          </div>
+        </div>
+        <div class="memory-layout">
+          <aside id="memory-list" class="memory-list">
+            <div class="empty-state">Loading…</div>
+          </aside>
+          <div class="memory-editor">
+            <div class="memory-editor-head">
+              <span id="memory-current" class="memory-current">Pick a file to edit</span>
+              <span id="memory-flags" class="memory-flags"></span>
+              <button id="memory-save" class="btn-primary" type="button" disabled>Save</button>
+              <button id="memory-delete" class="btn-ghost" type="button" disabled>Delete</button>
+            </div>
+            <textarea id="memory-content" rows="20" placeholder="Memory content…" disabled></textarea>
+          </div>
+        </div>
+      </section>
 
       <section id="plan-view" class="tasks-view view view-plan" hidden>
         <div class="tasks-toolbar">

@@ -60,7 +60,17 @@ const els = {
   planRefresh: $("#plan-refresh"),
   planAddStep: $("#plan-add-step"),
   planSyncTasks: $("#plan-sync-tasks"),
+  memoryList: $("#memory-list"),
+  memoryContent: $("#memory-content"),
+  memoryCurrent: $("#memory-current"),
+  memoryFlags: $("#memory-flags"),
+  memorySave: $("#memory-save"),
+  memoryDelete: $("#memory-delete"),
+  memoryRefresh: $("#memory-refresh"),
+  memoryNew: $("#memory-new"),
 };
+
+const MemoryState = { current: null, writable: false, dirty: false };
 
 const PLAN_STATUSES = ["pending", "in_progress", "completed", "blocked", "cancelled"];
 
@@ -846,6 +856,7 @@ function setView(view) {
   }
   if (view === "tasks") loadTasks();
   if (view === "plan") loadPlan();
+  if (view === "memory") loadMemory();
 }
 
 // ---------------------------------------------------------------------------
@@ -952,6 +963,139 @@ async function savePlan() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Memory view
+// ---------------------------------------------------------------------------
+function renderMemoryList(payload) {
+  els.memoryList.innerHTML = "";
+  if (!payload.files.length) {
+    els.memoryList.innerHTML = `<div class="empty-state">No CLAUDE.md / .claude/rules files discovered.</div>`;
+    return;
+  }
+  for (const entry of payload.files) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "memory-item";
+    if (MemoryState.current === entry.path) btn.classList.add("active");
+    btn.innerHTML = `
+      <span class="memory-item-name">${escapeHtml(entry.name)}${entry.writable ? "" : " (read-only)"}</span>
+      <span class="memory-item-path">${escapeHtml(entry.path)}</span>
+    `;
+    btn.addEventListener("click", () => openMemoryFile(entry.path));
+    els.memoryList.appendChild(btn);
+  }
+}
+
+async function loadMemory() {
+  try {
+    const payload = await apiGet("/api/memory");
+    renderMemoryList(payload);
+  } catch (e) {
+    setStatus("error", `memory: ${e.message}`);
+  }
+}
+
+async function openMemoryFile(path) {
+  try {
+    const r = await fetch(`/api/memory/file?path=${encodeURIComponent(path)}`);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      setStatus("error", data.detail || `${r.status} ${r.statusText}`);
+      return;
+    }
+    MemoryState.current = data.path;
+    MemoryState.writable = !!data.writable;
+    MemoryState.dirty = false;
+    els.memoryCurrent.textContent = data.path;
+    els.memoryFlags.textContent = data.writable
+      ? `${data.size} bytes`
+      : `${data.size} bytes · read-only`;
+    els.memoryContent.value = data.content || "";
+    els.memoryContent.disabled = !data.writable;
+    els.memorySave.disabled = !data.writable;
+    els.memoryDelete.disabled = !data.writable;
+    // Repaint list so the active row updates.
+    await loadMemory();
+  } catch (e) {
+    setStatus("error", `memory: ${e.message}`);
+  }
+}
+
+async function saveMemory() {
+  if (!MemoryState.current || !MemoryState.writable) return;
+  try {
+    setStatus("busy", "Saving memory…");
+    const r = await fetch("/api/memory/file", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: MemoryState.current, content: els.memoryContent.value }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      setStatus("error", data.detail || `${r.status} ${r.statusText}`);
+      return;
+    }
+    MemoryState.dirty = false;
+    setStatus("ready", "Memory saved");
+    await loadMemory();
+  } catch (e) {
+    setStatus("error", `memory: ${e.message}`);
+  }
+}
+
+async function deleteMemory() {
+  if (!MemoryState.current || !MemoryState.writable) return;
+  if (!confirm(`Delete ${MemoryState.current}?`)) return;
+  try {
+    const r = await fetch(
+      `/api/memory/file?path=${encodeURIComponent(MemoryState.current)}`,
+      { method: "DELETE" }
+    );
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      setStatus("error", data.detail || `${r.status} ${r.statusText}`);
+      return;
+    }
+    MemoryState.current = null;
+    MemoryState.writable = false;
+    els.memoryContent.value = "";
+    els.memoryContent.disabled = true;
+    els.memorySave.disabled = true;
+    els.memoryDelete.disabled = true;
+    els.memoryCurrent.textContent = "Pick a file to edit";
+    els.memoryFlags.textContent = "";
+    setStatus("ready", "Deleted");
+    await loadMemory();
+  } catch (e) {
+    setStatus("error", `memory: ${e.message}`);
+  }
+}
+
+async function newMemoryFile() {
+  const suggested = "CLAUDE.local.md";
+  const name = prompt("New memory file path (relative to cwd or absolute):", suggested);
+  if (!name) return;
+  // Use the cwd from the snapshot so the new file lands inside the workspace.
+  const cwd = State.serverState?.cwd || "";
+  const target = name.startsWith("/") || name.startsWith("~") ? name : `${cwd}/${name}`;
+  try {
+    const r = await fetch("/api/memory/file", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: target, content: "" }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      setStatus("error", data.detail || `${r.status} ${r.statusText}`);
+      return;
+    }
+    await loadMemory();
+    await openMemoryFile(data.path);
+  } catch (e) {
+    setStatus("error", `memory: ${e.message}`);
+  }
+}
+
 async function clearPlan() {
   if (!confirm("Clear the entire plan?")) return;
   try {
@@ -1010,6 +1154,10 @@ function bind() {
     const idx = els.planSteps.querySelectorAll(".plan-step-row").length;
     els.planSteps.appendChild(makePlanRow({}, idx));
   });
+  if (els.memorySave) els.memorySave.addEventListener("click", saveMemory);
+  if (els.memoryDelete) els.memoryDelete.addEventListener("click", deleteMemory);
+  if (els.memoryRefresh) els.memoryRefresh.addEventListener("click", loadMemory);
+  if (els.memoryNew) els.memoryNew.addEventListener("click", newMemoryFile);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !els.palette.classList.contains("hidden")) {
       closePalette();

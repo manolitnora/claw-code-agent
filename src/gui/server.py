@@ -39,6 +39,7 @@ from ..session_store import (
     StoredAgentSession,
     load_agent_session,
 )
+from .memory_routes import MemoryPathContext, create_memory_router
 from .plans_routes import create_plans_router
 from .tasks_routes import create_tasks_router
 
@@ -435,6 +436,14 @@ def create_app(state: AgentState) -> FastAPI:
 
     app.include_router(create_tasks_router(lambda: state.cwd))
     app.include_router(create_plans_router(lambda: state.cwd))
+    app.include_router(
+        create_memory_router(
+            lambda: MemoryPathContext(
+                cwd=state.cwd,
+                additional_working_directories=state.additional_working_directories,
+            )
+        )
+    )
 
     # ------------- static + index ------------------------------------------
     app.mount(
