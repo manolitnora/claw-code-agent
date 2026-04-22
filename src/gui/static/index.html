@@ -175,6 +175,7 @@
             <button class="view-tab" data-view="plugins" type="button">Plugins</button>
             <button class="view-tab" data-view="ask" type="button">Ask</button>
             <button class="view-tab" data-view="workflows" type="button">Workflows</button>
+            <button class="view-tab" data-view="search" type="button">Search</button>
           </div>
         </div>
         <div class="topbar-right">
@@ -207,6 +208,23 @@
           <span id="usage-meta"></span>
         </div>
       </footer>
+
+      <section id="search-view" class="tasks-view view" data-view-name="search" hidden>
+        <div class="tasks-toolbar">
+          <h2>Search</h2>
+          <button id="search-refresh" class="btn-ghost" type="button" title="Refresh">⟳</button>
+        </div>
+        <div id="search-active" class="worktree-status">No active provider</div>
+        <h3 class="worktree-history-title">Providers</h3>
+        <div id="search-providers" class="skills-grid"></div>
+        <h3 class="worktree-history-title">Run a query</h3>
+        <form id="search-form" class="tasks-create" style="flex-wrap:wrap; gap:8px;">
+          <input type="text" name="query" placeholder="Search query…" autocomplete="off" required style="flex:2;" />
+          <input type="number" name="max_results" placeholder="max" min="1" max="50" value="5" style="width:80px;" />
+          <button type="submit" class="btn-primary">Search</button>
+        </form>
+        <div id="search-results" class="history-list"></div>
+      </section>
 
       <section id="workflows-view" class="tasks-view view" data-view-name="workflows" hidden>
         <div class="tasks-toolbar">

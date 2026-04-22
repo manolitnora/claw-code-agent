@@ -75,6 +75,7 @@
 | 🆕 | **GUI Plugins View** | New **Plugins** tab — list manifests from `.claw-plugin/plugin.json`, `.codex-plugin/plugin.json`, and `plugins/*/plugin.json` with their tools, virtual tools, aliases, blocks, and lifecycle hooks |
 | 🆕 | **GUI Ask-User Queue** | New **Ask** tab — preload answers (exact or contains match), browse the queue and history, and clear past entries; the agent's `Ask` tool consumes them straight from `.port_sessions/ask_user_runtime.json` |
 | 🆕 | **GUI Workflows View** | New **Workflows** tab — list discovered workflow definitions from `.claw-workflows.json`, trigger a recorded run with custom JSON arguments, browse run history |
+| 🆕 | **GUI Search View** | New **Search** tab — discover providers from `.claw-search.json`/`.claude/search.json`, activate one, and run live SearXNG/Brave/Tavily queries straight from the browser |
 | 🆕 | **Daemon Commands** | Local `daemon start/ps/logs/attach/kill` wrapper over background agent sessions |
 | 🆕 | **Background Sessions** | Local `agent-bg`, `agent-ps`, `agent-logs`, `agent-attach`, and `agent-kill` flows |
 | 🆕 | **Testing Guide** | Comprehensive [TESTING_GUIDE.md](TESTING_GUIDE.md) with commands for every feature |

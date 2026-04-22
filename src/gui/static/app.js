@@ -116,6 +116,11 @@ const els = {
   workflowsGrid: $("#workflows-grid"),
   workflowsHistory: $("#workflows-history"),
   workflowsRefresh: $("#workflows-refresh"),
+  searchActive: $("#search-active"),
+  searchProviders: $("#search-providers"),
+  searchForm: $("#search-form"),
+  searchResults: $("#search-results"),
+  searchRefresh: $("#search-refresh"),
 };
 
 const BgState = { current: null, status: null };
@@ -917,6 +922,101 @@ function setView(view) {
   if (view === "plugins") loadPlugins();
   if (view === "ask") loadAskUser();
   if (view === "workflows") loadWorkflows();
+  if (view === "search") loadSearchView();
+}
+
+// ---------------------------------------------------------------------------
+// Search view
+// ---------------------------------------------------------------------------
+async function loadSearchView() {
+  try {
+    renderSearchProviders(await apiGet("/api/search"));
+  } catch (e) {
+    setStatus("error", `search: ${e.message}`);
+  }
+}
+
+function renderSearchProviders(payload) {
+  const current = payload.current_provider;
+  if (current) {
+    els.searchActive.classList.add("active");
+    els.searchActive.innerHTML = `
+      <span class="label">active</span><span class="value">${escapeHtml(current.name)}</span>
+      <span class="label">kind</span><span class="value">${escapeHtml(current.provider)}</span>
+      <span class="label">base_url</span><span class="value">${escapeHtml(current.base_url)}</span>
+      ${current.api_key_env ? `<span class="label">api_key_env</span><span class="value">${escapeHtml(current.api_key_env)}</span>` : ""}
+    `;
+  } else {
+    els.searchActive.classList.remove("active");
+    els.searchActive.textContent = "No active search provider — add one to .claw-search.json or .claude/search.json.";
+  }
+
+  els.searchProviders.innerHTML = "";
+  if (!payload.providers.length) {
+    els.searchProviders.innerHTML = `<div class="empty-state">No providers discovered.</div>`;
+    return;
+  }
+  for (const p of payload.providers) {
+    const card = document.createElement("div");
+    card.className = "skill-card";
+    card.innerHTML = `
+      <span class="skill-name">${escapeHtml(p.name)}</span>
+      <span class="skill-desc">${escapeHtml(p.description || "")}</span>
+      <div class="skill-meta">
+        <span class="skill-meta-pill">${escapeHtml(p.provider)}</span>
+        <span class="skill-meta-pill">${escapeHtml(p.base_url)}</span>
+        ${p.api_key_env ? `<span class="skill-meta-pill">env: ${escapeHtml(p.api_key_env)}</span>` : ""}
+      </div>
+      <div class="skill-actions">
+        <button data-act="activate">Activate</button>
+      </div>
+    `;
+    card.querySelector('[data-act="activate"]').addEventListener("click", () => activateSearchProvider(p.name));
+    els.searchProviders.appendChild(card);
+  }
+}
+
+async function activateSearchProvider(name) {
+  try {
+    await apiPost(`/api/search/activate/${encodeURIComponent(name)}`, {});
+    setStatus("ready", `Activated ${name}`);
+    await loadSearchView();
+  } catch (e) {
+    setStatus("error", `search: ${e.message}`);
+  }
+}
+
+async function runSearch(ev) {
+  ev.preventDefault();
+  const fd = new FormData(els.searchForm);
+  const body = {
+    query: (fd.get("query") || "").trim(),
+    max_results: Number(fd.get("max_results") || 5),
+  };
+  if (!body.query) return;
+  try {
+    setStatus("busy", "Searching…");
+    const data = await apiPost("/api/search/query", body);
+    els.searchResults.innerHTML = "";
+    if (!data.results.length) {
+      els.searchResults.innerHTML = `<div class="empty-state">No results.</div>`;
+    } else {
+      for (const r of data.results) {
+        const row = document.createElement("div");
+        row.className = "history-row";
+        row.innerHTML = `
+          <span class="history-when">${r.rank}</span>
+          <span class="history-tool"><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">${escapeHtml(r.title)}</a></span>
+          <span class="history-detail">${escapeHtml(r.snippet || "")}</span>
+          <span class="history-session">${escapeHtml(r.provider_name)}</span>
+        `;
+        els.searchResults.appendChild(row);
+      }
+    }
+    setStatus("ready", `${data.results.length} result${data.results.length === 1 ? "" : "s"}`);
+  } catch (e) {
+    setStatus("error", `search: ${e.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2057,6 +2157,8 @@ function bind() {
   if (els.askRefresh) els.askRefresh.addEventListener("click", loadAskUser);
   if (els.askClearHistory) els.askClearHistory.addEventListener("click", clearAskHistory);
   if (els.workflowsRefresh) els.workflowsRefresh.addEventListener("click", loadWorkflows);
+  if (els.searchRefresh) els.searchRefresh.addEventListener("click", loadSearchView);
+  if (els.searchForm) els.searchForm.addEventListener("submit", runSearch);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !els.palette.classList.contains("hidden")) {
       closePalette();
