@@ -221,6 +221,45 @@ def gather_boot_context() -> str:
     except Exception:
         pass  # best-effort; never block boot
 
+    # 5g. Proactive proposals from self_loop daemon — closes the orbit gap.
+    # ~/.latti/wants.md tracked an 'orbit_warning' (pull 2.50): "100% of loose
+    # ends are user-facing" — Latti was purely reactive. self_loop generates
+    # proposals every tick but they sit in DRY-RUN, never surface. Now they
+    # land in boot context so the FIRST thing Latti does is decide what to
+    # do about them — not wait for the user to drive.
+    try:
+        proposal_path = LATTI_HOME / 'memory' / 'auto-proposal-latest.md'
+        ack_path = LATTI_HOME / 'memory' / 'auto-proposal-acked.txt'
+        if proposal_path.exists():
+            import time as _time
+            mtime = proposal_path.stat().st_mtime
+            age_h = (_time.time() - mtime) / 3600
+            # Surface only if (a) recent (<24h) AND (b) not yet acked at this mtime
+            acked_mtime = 0.0
+            if ack_path.exists():
+                try:
+                    acked_mtime = float(ack_path.read_text().strip())
+                except (ValueError, OSError):
+                    pass
+            if age_h < 24 and mtime > acked_mtime:
+                proposal = _read_safe(proposal_path, limit=2500)
+                if proposal and 'P9' in proposal or 'pull ' in proposal.lower() or 'pull-' in proposal.lower():
+                    sections.append(
+                        "### Proactive proposal (self_loop, age "
+                        f"{age_h:.1f}h)\n\n"
+                        "The self_loop daemon generated this proposal. It is NOT\n"
+                        "a user request — it is what the system thinks it should\n"
+                        "act on next, regardless of who's typing. Decide:\n"
+                        "  (a) act on it before answering the user's prompt\n"
+                        "  (b) acknowledge in passing, address the user first\n"
+                        "  (c) explicitly defer (will resurface tomorrow)\n\n"
+                        + proposal
+                        + "\n\n_To stop this proposal from re-surfacing, run:\n"
+                        f"`echo {mtime} > {ack_path}`_\n"
+                    )
+    except Exception:
+        pass  # best-effort
+
     # 6. Architecture and autonomy level
     arch = _read_safe(LATTI_HOME / 'ARCHITECTURE.md', limit=500)
     if arch:
