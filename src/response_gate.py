@@ -47,6 +47,9 @@ class ResponseGate:
         """
         self.violations = []
 
+        # Pattern 0: Verbose identity (scar_verbose_identity — 7 corrections)
+        self._check_verbose_identity(response_text)
+
         # Pattern 1: Trailing question (weight 4.81 — HIGHEST)
         self._check_trailing_question(response_text)
 
@@ -288,6 +291,48 @@ class ResponseGate:
                 )
                 return
 
+    def _check_verbose_identity(self, text: str) -> None:
+        """Detect: identity assertion + verbose explanation.
+
+        Scar: scar_verbose_identity — 'Identity responses must be brief.
+        1-2 sentences. Match user density, not a textbook.'
+
+        Triggers when text contains both:
+          (a) an identity assertion: 'I am Claude', "I'm an AI", 'I am an
+              assistant', 'as Claude', 'made by Anthropic', etc.
+          (b) more than 2 substantive sentences (i.e. the response is
+              padding the identity with explanation/help-offer/preamble)
+        """
+        identity_assertions = [
+            r"\bI(?:'?m|\s+am)\s+(?:Claude|an?\s+(?:AI|LLM|assistant|language\s+model))\b",
+            r"\bmade\s+by\s+Anthropic\b",
+            r"\bmy\s+name\s+is\s+Claude\b",
+            r"\bAnthropic'?s?\s+(?:AI|assistant|model)\b",
+        ]
+        # Sentence-split first so we can check WHERE identity appears.
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+        if len(sentences) <= 2:
+            return  # brief identity — always fine
+
+        # Only fire if the response LEADS with identity (first sentence).
+        # Mid-text identity mentions in substantive responses are not
+        # the verbose-identity scar.
+        first_sentence = sentences[0]
+        leads_with_identity = any(
+            re.search(p, first_sentence, re.IGNORECASE) for p in identity_assertions
+        )
+        if not leads_with_identity:
+            return
+
+        self.violations.append(
+            GateViolation(
+                pattern_name="verbose_identity",
+                severity=0.85,
+                location=f"{len(sentences)} sentences",
+                suggestion="Identity → 1-2 sentences. Drop preamble, drop 'here to help', drop trailing offers.",
+            )
+        )
+
     def _check_brevity(self, text: str) -> None:
         """
         Detect: responses that are unnecessarily verbose.
@@ -465,9 +510,48 @@ def _rewrite_strip_routing(text: str) -> tuple[str, bool]:
     return out, True
 
 
+_IDENTITY_KEEP_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"\bI(?:'?m|\s+am)\s+(?:Claude|an?\s+(?:AI|LLM|assistant|language\s+model))\b",
+        r"\bmade\s+by\s+Anthropic\b",
+        r"\bmy\s+name\s+is\s+Claude\b",
+    ]
+]
+
+
+def _rewrite_collapse_verbose_identity(text: str) -> tuple[str, bool]:
+    """Trim verbose identity responses to the smallest set of sentences
+    that contains the identity assertion. Drops 'here to help', preamble,
+    trailing offers, and follow-up questions — the wallpaper around the
+    actual identity statement.
+    """
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+    if len(sentences) <= 2:
+        return text, False
+
+    keepers: list[int] = []
+    for i, s in enumerate(sentences):
+        if any(p.search(s) for p in _IDENTITY_KEEP_PATTERNS):
+            keepers.append(i)
+
+    if not keepers:
+        # Identity assertion was matched at check level but no single
+        # sentence carries it (probably split across sentences) — fall
+        # back to keeping the first sentence only.
+        out = sentences[0].rstrip()
+        return out, True
+
+    # Keep only identity-bearing sentences. If neighbouring sentence
+    # contains a hard fact (proper noun: Anthropic / Claude) keep too.
+    out = " ".join(sentences[i] for i in keepers).rstrip()
+    return out, out != text
+
+
 # Map pattern_name → rewriter. Patterns without a rewriter fall through to the
 # old append-message behaviour so they remain visible.
 _REWRITERS = {
+    "verbose_identity":   _rewrite_collapse_verbose_identity,
     "trailing_question":  _rewrite_strip_trailing_question,
     "filler_preamble":    _rewrite_strip_filler_preamble,
     "as_an_ai":           _rewrite_strip_as_an_ai,

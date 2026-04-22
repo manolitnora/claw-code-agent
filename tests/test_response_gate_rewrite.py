@@ -77,6 +77,50 @@ class TestRewriters:
         assert _is_clean(out)
 
 
+class TestVerboseIdentity:
+    """The 7× unabsorbed scar in ~/.latti/wants.md — verbose_identity."""
+
+    def test_classic_verbose_identity_collapses(self):
+        text = (
+            "I am Claude, an AI assistant made by Anthropic. As an AI, I am "
+            "here to help you with a wide range of tasks including coding, "
+            "analysis, writing, and answering questions. I'm trained to be "
+            "helpful, harmless, and honest. What would you like to know?"
+        )
+        out = apply_response_gate(text)
+        # Identity assertion preserved
+        assert "I am Claude" in out or "I'm Claude" in out
+        # Wallpaper removed
+        assert "here to help" not in out.lower()
+        assert "what would you like" not in out.lower()
+        # Massively shorter
+        assert len(out) < len(text) * 0.4
+
+    def test_brief_identity_passes_unchanged(self):
+        text = "I'm Claude, made by Anthropic."
+        assert apply_response_gate(text) == text
+
+    def test_two_sentence_identity_acceptable(self):
+        # Two sentences: identity + offer is the cap. Should not fire
+        # verbose_identity. (trailing_question may still strip the ?)
+        text = "I am Claude, an AI by Anthropic. How can I help?"
+        out = apply_response_gate(text)
+        assert "I am Claude" in out
+        assert "How can I help" in out
+
+    def test_mid_text_identity_not_collapsed(self):
+        """Substantive response that mentions identity in middle is NOT verbose_identity."""
+        text = (
+            "The script is at /scripts/foo.py. I am Claude, an AI assistant. "
+            "It runs hourly via cron and writes to /tmp/output.log. Tests pass."
+        )
+        out = apply_response_gate(text)
+        # Substantive content preserved
+        assert "/scripts/foo.py" in out
+        assert "hourly via cron" in out
+        assert "Tests pass" in out
+
+
 class TestNoFalsePositives:
     def test_legitimate_question_not_stripped(self):
         # A genuine question to the user (mid-conversation, not closing) should
