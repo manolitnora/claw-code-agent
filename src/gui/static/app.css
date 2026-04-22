@@ -659,6 +659,24 @@ body {
   color: var(--text);
 }
 
+.settings-advanced {
+  margin-top: 4px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+.settings-advanced > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  user-select: none;
+}
+
+.settings-advanced > summary:hover {
+  color: var(--text);
+}
+
 /* Palette */
 .palette {
   position: fixed;

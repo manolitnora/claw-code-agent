@@ -61,6 +61,45 @@
             <span>Max turns</span>
             <input type="number" name="max_turns" min="1" step="1" />
           </label>
+          <details class="settings-advanced">
+            <summary>Budgets &amp; limits (blank = unlimited)</summary>
+            <label>
+              <span>Max cost (USD)</span>
+              <input type="number" name="max_total_cost_usd" min="0" step="0.01" />
+            </label>
+            <label>
+              <span>Max total tokens</span>
+              <input type="number" name="max_total_tokens" min="1" step="1" />
+            </label>
+            <label>
+              <span>Max input tokens</span>
+              <input type="number" name="max_input_tokens" min="1" step="1" />
+            </label>
+            <label>
+              <span>Max output tokens</span>
+              <input type="number" name="max_output_tokens" min="1" step="1" />
+            </label>
+            <label>
+              <span>Max reasoning tokens</span>
+              <input type="number" name="max_reasoning_tokens" min="1" step="1" />
+            </label>
+            <label>
+              <span>Max tool calls</span>
+              <input type="number" name="max_tool_calls" min="1" step="1" />
+            </label>
+            <label>
+              <span>Max model calls</span>
+              <input type="number" name="max_model_calls" min="1" step="1" />
+            </label>
+            <label>
+              <span>Max delegated tasks</span>
+              <input type="number" name="max_delegated_tasks" min="1" step="1" />
+            </label>
+            <label>
+              <span>Max session turns</span>
+              <input type="number" name="max_session_turns" min="1" step="1" />
+            </label>
+          </details>
           <button type="submit" class="btn-secondary">Save</button>
         </form>
       </div>

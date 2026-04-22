@@ -245,6 +245,18 @@ function appendToolCall({ name, args, result, isError }) {
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
+const BUDGET_FIELDS = [
+  "max_total_cost_usd",
+  "max_total_tokens",
+  "max_input_tokens",
+  "max_output_tokens",
+  "max_reasoning_tokens",
+  "max_tool_calls",
+  "max_model_calls",
+  "max_delegated_tasks",
+  "max_session_turns",
+];
+
 function applyServerState(state) {
   State.serverState = state;
   const f = els.settingsForm;
@@ -257,6 +269,9 @@ function applyServerState(state) {
   if (f.temperature) f.temperature.value = state.temperature ?? 0;
   if (f.timeout_seconds) f.timeout_seconds.value = state.timeout_seconds ?? 120;
   if (f.max_turns) f.max_turns.value = state.max_turns ?? 12;
+  for (const name of BUDGET_FIELDS) {
+    if (f[name]) f[name].value = state[name] == null ? "" : state[name];
+  }
   els.cwdMeta.textContent = `cwd: ${state.cwd || "?"}`;
 }
 
@@ -287,6 +302,13 @@ async function saveSettings(ev) {
   if (to !== null && to !== "") payload.timeout_seconds = Number(to);
   const mt = fd.get("max_turns");
   if (mt !== null && mt !== "") payload.max_turns = Number(mt);
+  // Budget knobs: empty string -> null (clear), numeric -> number.  Always
+  // include them so "I just cleared the limit" round-trips to the server.
+  for (const name of BUDGET_FIELDS) {
+    if (!f[name]) continue;
+    const raw = fd.get(name);
+    payload[name] = raw === null || raw === "" ? null : Number(raw);
+  }
   try {
     setStatus("busy", "Saving settings…");
     const state = await apiPost("/api/state", payload);

@@ -92,6 +92,54 @@ class GuiServerTests(unittest.TestCase):
             self.assertTrue(data['stream_model_responses'])
             self.assertEqual(data['max_turns'], 25)
 
+    def test_state_snapshot_defaults_budgets_to_null(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            client, _ = _build_client(Path(d))
+            payload = client.get('/api/state').json()
+            for name in (
+                'max_total_tokens',
+                'max_input_tokens',
+                'max_output_tokens',
+                'max_reasoning_tokens',
+                'max_total_cost_usd',
+                'max_tool_calls',
+                'max_delegated_tasks',
+                'max_model_calls',
+                'max_session_turns',
+            ):
+                self.assertIsNone(payload[name])
+
+    def test_state_update_round_trips_and_clears_budgets(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            client, _ = _build_client(Path(d))
+            set_payload = {
+                'max_total_tokens': 4096,
+                'max_total_cost_usd': 5.50,
+                'max_tool_calls': 20,
+            }
+            data = client.post('/api/state', json=set_payload).json()
+            self.assertEqual(data['max_total_tokens'], 4096)
+            self.assertEqual(data['max_total_cost_usd'], 5.50)
+            self.assertEqual(data['max_tool_calls'], 20)
+            # Untouched knobs stayed null.
+            self.assertIsNone(data['max_output_tokens'])
+
+            # Explicit null clears one knob but leaves the others alone.
+            cleared = client.post(
+                '/api/state',
+                json={'max_tool_calls': None},
+            ).json()
+            self.assertIsNone(cleared['max_tool_calls'])
+            self.assertEqual(cleared['max_total_tokens'], 4096)
+
+    def test_state_update_rejects_nonpositive_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            client, _ = _build_client(Path(d))
+            r = client.post('/api/state', json={'max_total_tokens': 0})
+            self.assertEqual(r.status_code, 400)
+            r = client.post('/api/state', json={'max_total_cost_usd': -1})
+            self.assertEqual(r.status_code, 400)
+
     def test_state_update_rejects_bad_runtime_knobs(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             client, _ = _build_client(Path(d))

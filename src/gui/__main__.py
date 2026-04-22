@@ -48,6 +48,15 @@ def main() -> None:
     parser.add_argument('--timeout-seconds', type=float, default=120.0)
     parser.add_argument('--stream', action='store_true', dest='stream_model_responses')
     parser.add_argument('--max-turns', type=int, default=12)
+    parser.add_argument('--max-total-tokens', type=int, default=None)
+    parser.add_argument('--max-input-tokens', type=int, default=None)
+    parser.add_argument('--max-output-tokens', type=int, default=None)
+    parser.add_argument('--max-reasoning-tokens', type=int, default=None)
+    parser.add_argument('--max-budget-usd', type=float, default=None, dest='max_total_cost_usd')
+    parser.add_argument('--max-tool-calls', type=int, default=None)
+    parser.add_argument('--max-delegated-tasks', type=int, default=None)
+    parser.add_argument('--max-model-calls', type=int, default=None)
+    parser.add_argument('--max-session-turns', type=int, default=None)
     parser.add_argument(
         '--no-browser',
         action='store_true',
@@ -68,6 +77,15 @@ def main() -> None:
         timeout_seconds=args.timeout_seconds,
         stream_model_responses=args.stream_model_responses,
         max_turns=args.max_turns,
+        max_total_tokens=args.max_total_tokens,
+        max_input_tokens=args.max_input_tokens,
+        max_output_tokens=args.max_output_tokens,
+        max_reasoning_tokens=args.max_reasoning_tokens,
+        max_total_cost_usd=args.max_total_cost_usd,
+        max_tool_calls=args.max_tool_calls,
+        max_delegated_tasks=args.max_delegated_tasks,
+        max_model_calls=args.max_model_calls,
+        max_session_turns=args.max_session_turns,
     )
     app = create_app(state)
 

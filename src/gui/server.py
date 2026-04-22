@@ -17,11 +17,18 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+
+# Sentinel for "field not provided" — lets callers distinguish "leave as-is"
+# from "set explicitly to None" (needed for budget knobs where None means
+# unlimited, which is itself a valid setting the user may want to apply).
+_UNSET: Any = object()
+
 from ..agent_runtime import LocalCodingAgent
 from ..agent_slash_commands import get_slash_command_specs
 from ..agent_types import (
     AgentPermissions,
     AgentRuntimeConfig,
+    BudgetConfig,
     ModelConfig,
 )
 from ..bundled_skills import get_bundled_skills
@@ -57,6 +64,15 @@ class AgentState:
         timeout_seconds: float = 120.0,
         stream_model_responses: bool = False,
         max_turns: int = 12,
+        max_total_tokens: int | None = None,
+        max_input_tokens: int | None = None,
+        max_output_tokens: int | None = None,
+        max_reasoning_tokens: int | None = None,
+        max_total_cost_usd: float | None = None,
+        max_tool_calls: int | None = None,
+        max_delegated_tasks: int | None = None,
+        max_model_calls: int | None = None,
+        max_session_turns: int | None = None,
     ) -> None:
         self.cwd = cwd.resolve()
         self.session_directory = session_directory
@@ -71,6 +87,15 @@ class AgentState:
         self.timeout_seconds = timeout_seconds
         self.stream_model_responses = stream_model_responses
         self.max_turns = max_turns
+        self.max_total_tokens = max_total_tokens
+        self.max_input_tokens = max_input_tokens
+        self.max_output_tokens = max_output_tokens
+        self.max_reasoning_tokens = max_reasoning_tokens
+        self.max_total_cost_usd = max_total_cost_usd
+        self.max_tool_calls = max_tool_calls
+        self.max_delegated_tasks = max_delegated_tasks
+        self.max_model_calls = max_model_calls
+        self.max_session_turns = max_session_turns
         self._build_agent()
 
     def _build_agent(self) -> None:
@@ -78,12 +103,24 @@ class AgentState:
             allow_file_write=self.allow_write,
             allow_shell_commands=self.allow_shell,
         )
+        budget_config = BudgetConfig(
+            max_total_tokens=self.max_total_tokens,
+            max_input_tokens=self.max_input_tokens,
+            max_output_tokens=self.max_output_tokens,
+            max_reasoning_tokens=self.max_reasoning_tokens,
+            max_total_cost_usd=self.max_total_cost_usd,
+            max_tool_calls=self.max_tool_calls,
+            max_delegated_tasks=self.max_delegated_tasks,
+            max_model_calls=self.max_model_calls,
+            max_session_turns=self.max_session_turns,
+        )
         runtime_config = AgentRuntimeConfig(
             cwd=self.cwd,
             permissions=permissions,
             session_directory=self.session_directory,
             stream_model_responses=self.stream_model_responses,
             max_turns=self.max_turns,
+            budget_config=budget_config,
         )
         model_config = ModelConfig(
             model=self.model,
@@ -115,6 +152,17 @@ class AgentState:
         timeout_seconds: float | None = None,
         stream_model_responses: bool | None = None,
         max_turns: int | None = None,
+        # Budget knobs use the sentinel pattern — `None` means "no limit"
+        # (a valid setting), so they need a distinct "not provided" marker.
+        max_total_tokens: Any = _UNSET,
+        max_input_tokens: Any = _UNSET,
+        max_output_tokens: Any = _UNSET,
+        max_reasoning_tokens: Any = _UNSET,
+        max_total_cost_usd: Any = _UNSET,
+        max_tool_calls: Any = _UNSET,
+        max_delegated_tasks: Any = _UNSET,
+        max_model_calls: Any = _UNSET,
+        max_session_turns: Any = _UNSET,
     ) -> None:
         with self._lock:
             if model is not None:
@@ -146,6 +194,29 @@ class AgentState:
                 if max_turns < 1:
                     raise ValueError('max_turns must be >= 1')
                 self.max_turns = max_turns
+
+            for name, value, kind in (
+                ('max_total_tokens', max_total_tokens, 'int'),
+                ('max_input_tokens', max_input_tokens, 'int'),
+                ('max_output_tokens', max_output_tokens, 'int'),
+                ('max_reasoning_tokens', max_reasoning_tokens, 'int'),
+                ('max_total_cost_usd', max_total_cost_usd, 'float'),
+                ('max_tool_calls', max_tool_calls, 'int'),
+                ('max_delegated_tasks', max_delegated_tasks, 'int'),
+                ('max_model_calls', max_model_calls, 'int'),
+                ('max_session_turns', max_session_turns, 'int'),
+            ):
+                if value is _UNSET:
+                    continue
+                if value is not None:
+                    if (kind == 'int' and (not isinstance(value, int) or isinstance(value, bool))) or (
+                        kind == 'float' and not isinstance(value, (int, float))
+                    ):
+                        raise ValueError(f'{name} must be a number or null')
+                    if value <= 0:
+                        raise ValueError(f'{name} must be > 0 or null')
+                setattr(self, name, value)
+
             self._build_agent()
 
     def snapshot(self) -> dict[str, Any]:
@@ -160,6 +231,15 @@ class AgentState:
             'timeout_seconds': self.timeout_seconds,
             'stream_model_responses': self.stream_model_responses,
             'max_turns': self.max_turns,
+            'max_total_tokens': self.max_total_tokens,
+            'max_input_tokens': self.max_input_tokens,
+            'max_output_tokens': self.max_output_tokens,
+            'max_reasoning_tokens': self.max_reasoning_tokens,
+            'max_total_cost_usd': self.max_total_cost_usd,
+            'max_tool_calls': self.max_tool_calls,
+            'max_delegated_tasks': self.max_delegated_tasks,
+            'max_model_calls': self.max_model_calls,
+            'max_session_turns': self.max_session_turns,
             'active_session_id': self.agent.active_session_id,
         }
 
@@ -202,6 +282,16 @@ class StateUpdate(BaseModel):
     timeout_seconds: float | None = None
     stream_model_responses: bool | None = None
     max_turns: int | None = None
+    # Budget knobs — null clears the limit, omitted leaves it untouched.
+    max_total_tokens: int | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    max_reasoning_tokens: int | None = None
+    max_total_cost_usd: float | None = None
+    max_tool_calls: int | None = None
+    max_delegated_tasks: int | None = None
+    max_model_calls: int | None = None
+    max_session_turns: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +320,9 @@ def create_app(state: AgentState) -> FastAPI:
     @app.post('/api/state')
     async def post_state(payload: StateUpdate) -> dict[str, Any]:
         try:
-            state.update(**payload.model_dump(exclude_none=True))
+            # exclude_unset preserves explicit null (e.g. "clear the limit")
+            # while omitting fields the client never mentioned.
+            state.update(**payload.model_dump(exclude_unset=True))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return state.snapshot()
