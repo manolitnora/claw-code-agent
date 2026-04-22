@@ -736,6 +736,7 @@ body[data-view="ask"] [data-view-name]:not([data-view-name="ask"]) { display: no
 body[data-view="workflows"] [data-view-name]:not([data-view-name="workflows"]) { display: none !important; }
 body[data-view="search"] [data-view-name]:not([data-view-name="search"]) { display: none !important; }
 body[data-view="triggers"] [data-view-name]:not([data-view-name="triggers"]) { display: none !important; }
+body[data-view="teams"] [data-view-name]:not([data-view-name="teams"]) { display: none !important; }
 
 /* Tasks panel */
 .tasks-view {

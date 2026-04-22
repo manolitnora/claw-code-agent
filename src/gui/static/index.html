@@ -177,6 +177,7 @@
             <button class="view-tab" data-view="workflows" type="button">Workflows</button>
             <button class="view-tab" data-view="search" type="button">Search</button>
             <button class="view-tab" data-view="triggers" type="button">Triggers</button>
+            <button class="view-tab" data-view="teams" type="button">Teams</button>
           </div>
         </div>
         <div class="topbar-right">
@@ -209,6 +210,30 @@
           <span id="usage-meta"></span>
         </div>
       </footer>
+
+      <section id="teams-view" class="tasks-view view" data-view-name="teams" hidden>
+        <div class="tasks-toolbar">
+          <h2>Teams</h2>
+          <button id="teams-refresh" class="btn-ghost" type="button" title="Refresh">⟳</button>
+        </div>
+        <form id="teams-create-form" class="tasks-create" style="flex-wrap:wrap; gap:8px;">
+          <input type="text" name="name" placeholder="Team name" autocomplete="off" required />
+          <input type="text" name="members" placeholder="members (comma-separated)" autocomplete="off" />
+          <input type="text" name="description" placeholder="description (optional)" autocomplete="off" style="flex:1; min-width:160px;" />
+          <button type="submit" class="btn-primary">Create</button>
+        </form>
+        <h3 class="worktree-history-title">Teams</h3>
+        <div id="teams-grid" class="skills-grid"></div>
+        <h3 class="worktree-history-title">Send a message</h3>
+        <form id="teams-send-form" class="tasks-create" style="flex-wrap:wrap; gap:8px;">
+          <select id="teams-send-team" name="team" required></select>
+          <input type="text" name="sender" placeholder="sender" autocomplete="off" required />
+          <input type="text" name="text" placeholder="message text" autocomplete="off" required style="flex:1; min-width:160px;" />
+          <button type="submit" class="btn-primary">Send</button>
+        </form>
+        <h3 class="worktree-history-title">Messages</h3>
+        <div id="teams-messages" class="history-list"></div>
+      </section>
 
       <section id="triggers-view" class="tasks-view view" data-view-name="triggers" hidden>
         <div class="tasks-toolbar">

@@ -125,6 +125,12 @@ const els = {
   triggersHistory: $("#triggers-history"),
   triggersRefresh: $("#triggers-refresh"),
   triggersCreateForm: $("#triggers-create-form"),
+  teamsGrid: $("#teams-grid"),
+  teamsCreateForm: $("#teams-create-form"),
+  teamsSendForm: $("#teams-send-form"),
+  teamsSendTeam: $("#teams-send-team"),
+  teamsMessages: $("#teams-messages"),
+  teamsRefresh: $("#teams-refresh"),
 };
 
 const BgState = { current: null, status: null };
@@ -928,6 +934,133 @@ function setView(view) {
   if (view === "workflows") loadWorkflows();
   if (view === "search") loadSearchView();
   if (view === "triggers") loadRemoteTriggers();
+  if (view === "teams") loadTeams();
+}
+
+// ---------------------------------------------------------------------------
+// Teams view
+// ---------------------------------------------------------------------------
+async function loadTeams() {
+  try {
+    renderTeams(await apiGet("/api/teams"));
+  } catch (e) {
+    setStatus("error", `teams: ${e.message}`);
+  }
+}
+
+function renderTeams(payload) {
+  // Team cards
+  els.teamsGrid.innerHTML = "";
+  els.teamsSendTeam.innerHTML = "";
+  if (!payload.teams.length) {
+    els.teamsGrid.innerHTML = `<div class="empty-state">No teams yet — create one above.</div>`;
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(no teams)";
+    els.teamsSendTeam.appendChild(opt);
+  } else {
+    for (const team of payload.teams) {
+      const card = document.createElement("div");
+      card.className = "skill-card";
+      card.innerHTML = `
+        <span class="skill-name">${escapeHtml(team.name)}</span>
+        <span class="skill-desc">${escapeHtml(team.description || "")}</span>
+        <div class="skill-meta">
+          ${(team.members || []).map((m) => `<span class="skill-meta-pill">${escapeHtml(m)}</span>`).join("")}
+        </div>
+        <div class="skill-actions">
+          <button data-act="del">Delete</button>
+        </div>
+      `;
+      card.querySelector('[data-act="del"]').addEventListener("click", () => deleteTeam(team.name));
+      els.teamsGrid.appendChild(card);
+
+      const opt = document.createElement("option");
+      opt.value = team.name;
+      opt.textContent = team.name;
+      els.teamsSendTeam.appendChild(opt);
+    }
+  }
+
+  // Messages
+  els.teamsMessages.innerHTML = "";
+  if (!payload.messages.length) {
+    els.teamsMessages.innerHTML = `<div class="empty-state">No messages yet.</div>`;
+  } else {
+    for (const m of [...payload.messages].reverse()) {
+      const row = document.createElement("div");
+      row.className = "history-row";
+      row.innerHTML = `
+        <span class="history-when">${escapeHtml(m.created_at || "?")}</span>
+        <span class="history-tool">${escapeHtml(m.team_name)}</span>
+        <span class="history-detail"><strong>${escapeHtml(m.sender)}${m.recipient ? ` → ${escapeHtml(m.recipient)}` : ""}:</strong> ${escapeHtml(m.text)}</span>
+        <span class="history-session">${escapeHtml(m.message_id.slice(0, 12))}</span>
+      `;
+      els.teamsMessages.appendChild(row);
+    }
+  }
+}
+
+async function createTeam(ev) {
+  ev.preventDefault();
+  const fd = new FormData(els.teamsCreateForm);
+  const body = {
+    name: (fd.get("name") || "").trim(),
+    description: (fd.get("description") || "").trim() || null,
+    members: (fd.get("members") || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  };
+  if (!body.name) return;
+  try {
+    renderTeams(await apiPost("/api/teams", body));
+    els.teamsCreateForm.reset();
+    setStatus("ready", "Created");
+  } catch (e) {
+    setStatus("error", `teams: ${e.message}`);
+  }
+}
+
+async function deleteTeam(name) {
+  if (!confirm(`Delete team ${name} and all its messages?`)) return;
+  try {
+    const r = await fetch(`/api/teams/${encodeURIComponent(name)}`, { method: "DELETE" });
+    const data = await r.json();
+    if (!r.ok) {
+      setStatus("error", data.detail || `${r.status}`);
+      return;
+    }
+    renderTeams(data);
+  } catch (e) {
+    setStatus("error", `teams: ${e.message}`);
+  }
+}
+
+async function sendTeamMessage(ev) {
+  ev.preventDefault();
+  const fd = new FormData(els.teamsSendForm);
+  const team = (fd.get("team") || "").trim();
+  if (!team) {
+    setStatus("error", "teams: pick a team first");
+    return;
+  }
+  const body = {
+    text: (fd.get("text") || "").trim(),
+    sender: (fd.get("sender") || "").trim(),
+  };
+  if (!body.text || !body.sender) return;
+  try {
+    const data = await apiPost(
+      `/api/teams/${encodeURIComponent(team)}/messages`,
+      body
+    );
+    renderTeams(data.state);
+    els.teamsSendForm.text.value = "";
+    setStatus("ready", "Sent");
+  } catch (e) {
+    setStatus("error", `teams: ${e.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2264,6 +2397,9 @@ function bind() {
   if (els.searchForm) els.searchForm.addEventListener("submit", runSearch);
   if (els.triggersRefresh) els.triggersRefresh.addEventListener("click", loadRemoteTriggers);
   if (els.triggersCreateForm) els.triggersCreateForm.addEventListener("submit", createRemoteTrigger);
+  if (els.teamsRefresh) els.teamsRefresh.addEventListener("click", loadTeams);
+  if (els.teamsCreateForm) els.teamsCreateForm.addEventListener("submit", createTeam);
+  if (els.teamsSendForm) els.teamsSendForm.addEventListener("submit", sendTeamMessage);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !els.palette.classList.contains("hidden")) {
       closePalette();
