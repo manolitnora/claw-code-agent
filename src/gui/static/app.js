@@ -89,6 +89,12 @@ const els = {
   skillsGrid: $("#skills-grid"),
   skillsRefresh: $("#skills-refresh"),
   skillsIncludeInternal: $("#skills-include-internal"),
+  accountStatus: $("#account-status"),
+  accountRefresh: $("#account-refresh"),
+  accountLoginForm: $("#account-login-form"),
+  accountLogout: $("#account-logout"),
+  accountProfiles: $("#account-profiles"),
+  accountHistory: $("#account-history"),
 };
 
 const BgState = { current: null, status: null };
@@ -884,6 +890,123 @@ function setView(view) {
   if (view === "bg") loadBackgroundList();
   if (view === "worktree") loadWorktree();
   if (view === "skills") loadSkillsView();
+  if (view === "account") loadAccount();
+}
+
+// ---------------------------------------------------------------------------
+// Account view
+// ---------------------------------------------------------------------------
+function renderAccount(payload) {
+  const status = payload.status || {};
+  els.accountStatus.classList.toggle("active", !!status.logged_in);
+  const lines = [];
+  const push = (label, value) => {
+    if (value !== null && value !== undefined && value !== "")
+      lines.push(`<span class="label">${label}</span><span class="value">${escapeHtml(String(value))}</span>`);
+  };
+  push("logged_in", status.logged_in ? "yes" : "no");
+  push("detail", status.detail);
+  push("provider", status.provider);
+  push("identity", status.identity);
+  push("profile", status.profile_name);
+  push("api_base", status.api_base);
+  push("manifests", status.manifest_count);
+  push("profiles", status.profile_count);
+  if (status.credential_env_vars && status.credential_env_vars.length)
+    push("env_vars", status.credential_env_vars.join(", "));
+  els.accountStatus.innerHTML = lines.join("\n");
+  els.accountLogout.disabled = !status.logged_in;
+
+  // Profiles grid.
+  els.accountProfiles.innerHTML = "";
+  if (!payload.profiles.length) {
+    els.accountProfiles.innerHTML = `<div class="empty-state">No profiles in <code>.claude/account.json</code> yet.</div>`;
+  } else {
+    for (const profile of payload.profiles) {
+      const card = document.createElement("div");
+      card.className = "skill-card";
+      card.innerHTML = `
+        <span class="skill-name">${escapeHtml(profile.name)}</span>
+        <span class="skill-desc">${escapeHtml(profile.description || "")}</span>
+        <div class="skill-meta">
+          <span class="skill-meta-pill">provider: ${escapeHtml(profile.provider || "?")}</span>
+          <span class="skill-meta-pill">id: ${escapeHtml(profile.identity || "?")}</span>
+          ${profile.org ? `<span class="skill-meta-pill">org: ${escapeHtml(profile.org)}</span>` : ""}
+          ${profile.api_base ? `<span class="skill-meta-pill">api: ${escapeHtml(profile.api_base)}</span>` : ""}
+        </div>
+        <div class="skill-actions">
+          <button data-act="login">Activate</button>
+        </div>
+      `;
+      card.querySelector('[data-act="login"]').addEventListener("click", () =>
+        loginAccount({ target: profile.name })
+      );
+      els.accountProfiles.appendChild(card);
+    }
+  }
+
+  // History.
+  els.accountHistory.innerHTML = "";
+  if (!payload.history.length) {
+    els.accountHistory.innerHTML = `<div class="empty-state">No login history yet.</div>`;
+  } else {
+    for (const entry of [...payload.history].reverse()) {
+      const row = document.createElement("div");
+      row.className = "history-row";
+      const when = entry.logged_in_at || entry.logged_out_at || "unknown";
+      const detail = `${entry.provider || "?"}/${entry.identity || "?"}` +
+        (entry.profile_name ? ` (${entry.profile_name})` : "");
+      row.innerHTML = `
+        <span class="history-when">${escapeHtml(when)}</span>
+        <span class="history-tool">${escapeHtml(entry.action || "?")}</span>
+        <span class="history-detail">${escapeHtml(detail)}</span>
+        <span class="history-session">${escapeHtml(entry.reason || "")}</span>
+      `;
+      els.accountHistory.appendChild(row);
+    }
+  }
+}
+
+async function loadAccount() {
+  try {
+    renderAccount(await apiGet("/api/account"));
+  } catch (e) {
+    setStatus("error", `account: ${e.message}`);
+  }
+}
+
+async function loginAccount(body) {
+  try {
+    setStatus("busy", "Logging in…");
+    const data = await apiPost("/api/account/login", body);
+    renderAccount(data);
+    setStatus("ready", "Logged in");
+  } catch (e) {
+    setStatus("error", `account: ${e.message}`);
+  }
+}
+
+async function loginAccountForm(ev) {
+  ev.preventDefault();
+  const fd = new FormData(els.accountLoginForm);
+  const body = { target: (fd.get("target") || "").trim() };
+  if (!body.target) return;
+  const provider = (fd.get("provider") || "").trim();
+  const auth = (fd.get("auth_mode") || "").trim();
+  if (provider) body.provider = provider;
+  if (auth) body.auth_mode = auth;
+  await loginAccount(body);
+  els.accountLoginForm.reset();
+}
+
+async function logoutAccount() {
+  try {
+    const data = await apiPost("/api/account/logout", { reason: "manual_logout" });
+    renderAccount(data);
+    setStatus("ready", "Logged out");
+  } catch (e) {
+    setStatus("error", `account: ${e.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1461,6 +1584,9 @@ function bind() {
   if (els.skillsRefresh) els.skillsRefresh.addEventListener("click", loadSkillsView);
   if (els.skillsIncludeInternal)
     els.skillsIncludeInternal.addEventListener("change", loadSkillsView);
+  if (els.accountRefresh) els.accountRefresh.addEventListener("click", loadAccount);
+  if (els.accountLoginForm) els.accountLoginForm.addEventListener("submit", loginAccountForm);
+  if (els.accountLogout) els.accountLogout.addEventListener("click", logoutAccount);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !els.palette.classList.contains("hidden")) {
       closePalette();

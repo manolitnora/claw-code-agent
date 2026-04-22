@@ -728,6 +728,7 @@ body[data-view="history"] [data-view-name]:not([data-view-name="history"]) { dis
 body[data-view="bg"] [data-view-name]:not([data-view-name="bg"]) { display: none !important; }
 body[data-view="worktree"] [data-view-name]:not([data-view-name="worktree"]) { display: none !important; }
 body[data-view="skills"] [data-view-name]:not([data-view-name="skills"]) { display: none !important; }
+body[data-view="account"] [data-view-name]:not([data-view-name="account"]) { display: none !important; }
 
 /* Tasks panel */
 .tasks-view {

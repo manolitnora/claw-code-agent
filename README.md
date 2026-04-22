@@ -69,6 +69,7 @@
 | 🆕 | **GUI Background Sessions** | New **Background** tab lists detached `agent-bg` runs (running/exited/completed/failed), shows live logs, and lets you kill a running session — same `BackgroundSessionRuntime` the CLI uses |
 | 🆕 | **GUI Worktree View** | New **Worktree** tab — show status & history, create a managed `git worktree` (auto-switches the agent's cwd), and exit it (keep or remove); state survives reload via `WorktreeRuntime` |
 | 🆕 | **GUI Skills Marketplace** | New **Skills** tab — card grid of every bundled skill with description, when-to-use, aliases, and allowed tools; "Use in chat" button drops the invocation into the composer |
+| 🆕 | **GUI Accounts View** | New **Accounts** tab — discover profiles from `.claude/account.json`, log in by name or with an ephemeral identity, view login/logout history; persists into `AccountRuntime` state |
 | 🆕 | **Daemon Commands** | Local `daemon start/ps/logs/attach/kill` wrapper over background agent sessions |
 | 🆕 | **Background Sessions** | Local `agent-bg`, `agent-ps`, `agent-logs`, `agent-attach`, and `agent-kill` flows |
 | 🆕 | **Testing Guide** | Comprehensive [TESTING_GUIDE.md](TESTING_GUIDE.md) with commands for every feature |

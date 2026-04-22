@@ -169,6 +169,7 @@
             <button class="view-tab" data-view="bg" type="button">Background</button>
             <button class="view-tab" data-view="worktree" type="button">Worktree</button>
             <button class="view-tab" data-view="skills" type="button">Skills</button>
+            <button class="view-tab" data-view="account" type="button">Accounts</button>
           </div>
         </div>
         <div class="topbar-right">
@@ -201,6 +202,25 @@
           <span id="usage-meta"></span>
         </div>
       </footer>
+
+      <section id="account-view" class="tasks-view view" data-view-name="account" hidden>
+        <div class="tasks-toolbar">
+          <h2>Accounts</h2>
+          <button id="account-refresh" class="btn-ghost" type="button" title="Refresh">⟳</button>
+        </div>
+        <div id="account-status" class="worktree-status">Loading…</div>
+        <form id="account-login-form" class="tasks-create">
+          <input type="text" name="target" placeholder="Profile name or identity (e.g. sk-…)" autocomplete="off" required />
+          <input type="text" name="provider" placeholder="provider (optional)" autocomplete="off" />
+          <input type="text" name="auth_mode" placeholder="auth mode (optional)" autocomplete="off" />
+          <button type="submit" class="btn-primary">Login</button>
+          <button id="account-logout" type="button" class="btn-ghost" disabled>Logout</button>
+        </form>
+        <h3 class="worktree-history-title">Profiles</h3>
+        <div id="account-profiles" class="skills-grid"></div>
+        <h3 class="worktree-history-title">History</h3>
+        <div id="account-history" class="history-list"></div>
+      </section>
 
       <section id="skills-view" class="tasks-view view" data-view-name="skills" hidden>
         <div class="tasks-toolbar">
