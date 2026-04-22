@@ -153,6 +153,10 @@ class ResponseGate:
             r"your\s+choice",
             r"let\s+me\s+know\s+what",
             r"which\s+would\s+you\s+prefer",
+            r"would\s+you\s+like\s+me\s+to",
+            r"do\s+you\s+want\s+me\s+to",
+            r"shall\s+I",
+            r"should\s+I\s+(?:also|still|now|continue|proceed|stop|wait)",
         ]
 
         for pattern in routing_patterns:
@@ -178,10 +182,15 @@ class ResponseGate:
             r"^That'?s\s+a\s+great\s+question",
             r"^That'?s\s+a\s+good\s+point",
             r"^Let\s+me\s+explain",
+            r"^Let\s+me\s+",
             r"^Well,\s+",
             r"^So,\s+",
             r"^Actually,\s+",
             r"^Interesting\s+question",
+            # Single-word filler openers
+            r"^(?:Great|Sure|Certainly|Absolutely|Perfect|Exactly|Of\s+course)[!,.]",
+            r"^(?:Happy|Glad|Here)\s+(?:to\s+)?(?:help|do|let)[!,.]",
+            r"^I'?(?:ll|d|m)\s+(?:be\s+)?(?:happy|glad)\s+to[!,.]",
         ]
 
         first_line = text.split("\n")[0].strip()
@@ -328,16 +337,210 @@ def gate_response(response_text: str, verbose: bool = False) -> tuple[bool, str]
     return passes, message
 
 
+# ============================================================
+# Response rewriters — each is the structural inverse of one check.
+# Called from apply_response_gate when a violation is detected.
+# Goal: ship the corrected response, not the raw + apology.
+# ============================================================
+
+_TRAILING_QUESTION_LINE_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"^What\s+",
+        r"^How\s+",
+        r"^Would\s+you\s+",
+        r"^Should\s+",
+        r"^Do\s+you\s+",
+        r"^Can\s+you\s+",
+        r"^Does\s+",
+    ]
+]
+_TRAILING_QMARK = re.compile(r"\?\s*$")
+
+_FILLER_PREAMBLE_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"^(?:great|sure|certainly|absolutely|of course|perfect|exactly)[!,.\s]+",
+        r"^(?:happy|glad|here)\s+(?:to\s+)?(?:help|do|let)[!,.\s]+",
+        r"^(?:I'?(?:ll|d|m)\s+(?:be\s+)?(?:happy|glad)\s+to[!,.\s]+)",
+        r"^(?:let\s+me\s+)",
+    ]
+]
+
+_AS_AN_AI_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"\bas\s+an?\s+(?:AI|LLM|language\s+model|assistant)[^.,;\n]*[.,;]?\s*",
+        r"\bI'?m\s+(?:just\s+)?an?\s+(?:AI|LLM|language\s+model|assistant)[^.,;\n]*[.,;]?\s*",
+        r"\bI\s+don'?t\s+have\s+(?:personal\s+)?(?:opinions|feelings|preferences)[^.,;\n]*[.,;]?\s*",
+    ]
+]
+
+# Phrases that mark a routing-to-user sentence. We strip the entire
+# sentence containing any of these.
+_ROUTING_PHRASES = re.compile(
+    r"\b(?:your\s+call|standing\s+by|what\s+would\s+you\s+like|"
+    r"what\s+do\s+you\s+think|your\s+choice|let\s+me\s+know\s+what|"
+    r"which\s+would\s+you\s+prefer|would\s+you\s+like\s+me\s+to|"
+    r"do\s+you\s+want\s+me\s+to|shall\s+I|should\s+I)\b",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_strip_trailing_question(text: str) -> tuple[str, bool]:
+    """Drop the final line if it's a trailing question. Return (new_text, changed)."""
+    lines = text.rstrip().split("\n")
+    if not lines:
+        return text, False
+    last = lines[-1].strip()
+    if not last:
+        return text, False
+    for pat in _TRAILING_QUESTION_LINE_PATTERNS:
+        if pat.search(last):
+            return "\n".join(lines[:-1]).rstrip(), True
+    if _TRAILING_QMARK.search(last):
+        # If only one line and it's a question, keep but strip the question mark
+        if len(lines) == 1:
+            stripped = _TRAILING_QMARK.sub(".", last).rstrip()
+            return stripped, stripped != last
+        return "\n".join(lines[:-1]).rstrip(), True
+    return text, False
+
+
+def _rewrite_strip_filler_preamble(text: str) -> tuple[str, bool]:
+    changed = False
+    out = text
+    for pat in _FILLER_PREAMBLE_PATTERNS:
+        new = pat.sub("", out, count=1)
+        if new != out:
+            out = new
+            changed = True
+    if changed:
+        # Capitalize first character if it became lowercase after strip
+        out_stripped = out.lstrip()
+        if out_stripped and out_stripped[0].islower():
+            out = out_stripped[0].upper() + out_stripped[1:]
+    return out, changed
+
+
+def _rewrite_strip_as_an_ai(text: str) -> tuple[str, bool]:
+    changed = False
+    out = text
+    for pat in _AS_AN_AI_PATTERNS:
+        new = pat.sub("", out)
+        if new != out:
+            out = new
+            changed = True
+    return out, changed
+
+
+def _rewrite_strip_routing(text: str) -> tuple[str, bool]:
+    """Strip every sentence that contains a routing-to-user phrase.
+
+    Splits text into sentences using punctuation, drops any sentence that
+    matches the routing phrases, rejoins. Preserves paragraph structure by
+    operating on each newline-separated block independently.
+    """
+    if not _ROUTING_PHRASES.search(text):
+        return text, False
+
+    out_blocks: list[str] = []
+    changed = False
+    for block in text.split("\n"):
+        if not block.strip() or not _ROUTING_PHRASES.search(block):
+            out_blocks.append(block)
+            continue
+        # Sentence-split on terminal punctuation, keep delimiters
+        sentences = re.split(r"(?<=[.!?])\s+", block)
+        kept = [s for s in sentences if not _ROUTING_PHRASES.search(s)]
+        if len(kept) != len(sentences):
+            changed = True
+        out_blocks.append(" ".join(kept).rstrip())
+
+    if not changed:
+        return text, False
+
+    # Drop any blocks that became empty
+    out = "\n".join(b for b in out_blocks if b.strip())
+    return out, True
+
+
+# Map pattern_name → rewriter. Patterns without a rewriter fall through to the
+# old append-message behaviour so they remain visible.
+_REWRITERS = {
+    "trailing_question":  _rewrite_strip_trailing_question,
+    "filler_preamble":    _rewrite_strip_filler_preamble,
+    "as_an_ai":           _rewrite_strip_as_an_ai,
+    "routing":            _rewrite_strip_routing,
+}
+
+
+def _log_rewrite(applied: list[str], original_len: int, rewritten_len: int) -> None:
+    """Append a structured log entry for analysis. Failure non-fatal."""
+    import json, time
+    from pathlib import Path
+    log_path = Path.home() / ".latti" / "response-gate-rewrites.jsonl"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "applied": applied,
+            "chars_before": original_len,
+            "chars_after": rewritten_len,
+            "chars_removed": original_len - rewritten_len,
+        }
+        with open(log_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
 def apply_response_gate(response_text: str) -> str:
     """
-    Apply response gate and return the text.
-    If violations are detected, append them to the response.
-    This is the integration point called from agent_runtime.py.
+    Enforce learned scars by REWRITING the response to remove violations.
+
+    Previously: detected violations → appended report → user saw bad behaviour
+    plus a confession. Pattern was logged but never absorbed because the
+    behaviour itself shipped.
+
+    Now: detected violations → invoke matched rewriter → ship cleaned text.
+    Violations without a rewriter fall through to the legacy append-message
+    path so they stay visible until a rewriter is added.
     """
-    passes, message = gate_response(response_text, verbose=True)
-    
+    gate = ResponseGate()
+    passes, _violations = gate.check(response_text)
     if passes:
         return response_text
-    
-    # Violations detected — append gate report to response
-    return f"{response_text}\n\n{message}"
+
+    # Try to rewrite each violation type. After each rewrite, re-check to
+    # avoid false-positive 'unrewritten' messages when one rewrite (e.g.
+    # trailing_question) also satisfies a sibling violation (e.g. routing
+    # on the same removed line).
+    out = response_text
+    applied: list[str] = []
+    for v in gate.violations:
+        # Re-check on current text
+        recheck = ResponseGate()
+        recheck.check(out)
+        if not any(rv.pattern_name == v.pattern_name for rv in recheck.violations):
+            continue  # already gone
+        rewriter = _REWRITERS.get(v.pattern_name)
+        if rewriter is None:
+            continue  # no rewriter — silent fall-through
+        new_out, changed = rewriter(out)
+        if changed:
+            applied.append(v.pattern_name)
+            out = new_out
+
+    if applied:
+        _log_rewrite(applied, len(response_text), len(out))
+
+    # Final re-check. Anything still violating gets ONE compact line so the
+    # signal stays visible without dumping a wall of report.
+    final = ResponseGate()
+    final.check(out)
+    if final.violations:
+        names = ", ".join(sorted({v.pattern_name for v in final.violations}))
+        out = f"{out}\n\n[gate: residual unrewritten — {names}]"
+
+    return out
