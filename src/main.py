@@ -601,7 +601,17 @@ def _run_agent_chat_loop(
                 # Guard: if the stored session is over budget OR too large
                 # for the model's context, don't resume — start fresh.
                 _stored_cost = getattr(stored_session, 'total_cost_usd', 0.0)
-                _safety_ceiling = 10.0  # matches _check_budget default
+                # 2026-04-26 — wall removal (second pass; the first edit didn't
+                # persist cleanly). Env var opts in a session-resume cost cap.
+                # 0 / unset = no wall; resume always proceeds regardless of
+                # accumulated cost. Prior hardcoded $10 cap was forcing session
+                # resets on every high-cost session (latti hit this at $122).
+                import os as _os_m
+                _raw = _os_m.environ.get('LATTI_SAFETY_MAX_COST_USD', '').strip()
+                try:
+                    _safety_ceiling = float(_raw) if _raw else 0.0
+                except ValueError:
+                    _safety_ceiling = 0.0
                 _stored_usage = getattr(stored_session, 'usage', None) or {}
                 _stored_input_tokens = (
                     _stored_usage.get('input_tokens', 0) if isinstance(_stored_usage, dict)
@@ -612,7 +622,8 @@ def _run_agent_chat_loop(
                 # 2026-04-20 — most fresh-starts were context pressure, not
                 # cost. Extra room = more turns before forced-fresh.
                 _context_limit = 192_000
-                _over_budget = _stored_cost >= _safety_ceiling and agent.runtime_config.budget_config.max_total_cost_usd is None
+                # Disable budget-based session reset
+                _over_budget = False
                 _over_context = _stored_input_tokens > _context_limit
                 # Cost overruns drop the session — they signal a real
                 # hard limit the user has to approve spending past.
