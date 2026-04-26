@@ -131,7 +131,14 @@ def _build_status() -> str:
         tok_s = str(tok)
 
     cost_s = f' │ ${cost:.4f}' if cost > 0.001 else ''
-    return f'  {short} │ [{cwd}] {bar} {pct}%{cost_s} │ {tok_s} tokens │ turn {_state["turn_count"]}'
+    line = f'  {short} │ [{cwd}] {bar} {pct}%{cost_s} │ {tok_s} tokens │ turn {_state["turn_count"]}'
+    # Truncate to terminal width so the status line never wraps and corrupts
+    # the footer layout (wrapping pushes the prompt row into the scroll region,
+    # causing the "bouncing" / input corruption bug).
+    max_w = _cols()
+    if len(line) > max_w:
+        line = line[:max_w - 1] + '…'
+    return line
 
 
 def _draw_footer(prompt_text: str = '') -> None:
