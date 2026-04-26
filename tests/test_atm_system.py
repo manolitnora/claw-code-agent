@@ -25,13 +25,16 @@ from src.memory_retrieval import (
     classify_query,
     cosine_similarity,
     retrieve_context,
+    score_summary,
 )
 from src.prompt_cache import CacheStats, extract_cache_stats, wrap_system_prompt_for_caching
 from src.session_summary import (
     SessionSummaryIndex,
     TurnSummary,
+    embed_text,
     estimate_importance_score,
     load_summary_index,
+    reset_embedding_state,
     save_summary_index,
 )
 
@@ -512,6 +515,160 @@ class TestATMIntegration:
         # Verify both work together
         assert len(cached_blocks) == 1
         assert len(index.summaries) == 1
+
+
+# ============================================================================
+# Real Implementation Tests (no stubs)
+# ============================================================================
+
+
+class TestRealEmbeddings:
+    """Tests for the real TF-IDF + random-projection embed_text()."""
+
+    def setup_method(self):
+        reset_embedding_state()
+
+    def test_embed_text_returns_correct_dim(self):
+        """embed_text returns a 384-dim vector."""
+        vec = embed_text("Fixed the TUI footer bug.")
+        assert len(vec) == 384
+
+    def test_embed_text_is_normalised(self):
+        """embed_text returns an L2-normalised vector."""
+        import math
+        vec = embed_text("Some text about code.")
+        norm = math.sqrt(sum(x * x for x in vec))
+        assert norm == pytest.approx(1.0, abs=1e-4)
+
+    def test_embed_text_deterministic(self):
+        """Same text → same vector every time."""
+        reset_embedding_state()
+        v1 = embed_text("hello world")
+        reset_embedding_state()
+        v2 = embed_text("hello world")
+        assert v1 == v2
+
+    def test_embed_text_different_texts_differ(self):
+        """Different texts produce different vectors."""
+        v1 = embed_text("Fixed the TUI footer bug.")
+        v2 = embed_text("Implemented semantic retrieval.")
+        assert v1 != v2
+
+    def test_embed_text_empty_string(self):
+        """Empty string returns zero vector."""
+        vec = embed_text("")
+        assert all(x == 0.0 for x in vec)
+
+    def test_embed_text_similar_texts_closer(self):
+        """Semantically similar texts have higher cosine similarity."""
+        reset_embedding_state()
+        # Seed corpus so vocabulary is shared
+        texts = [
+            "Fixed the TUI footer bug by truncating the status line.",
+            "Fixed the TUI header bug by truncating the title line.",
+            "Implemented a completely different database schema.",
+        ]
+        for t in texts:
+            embed_text(t)  # warm up corpus
+
+        reset_embedding_state()
+        for t in texts:
+            embed_text(t)
+
+        v_a = embed_text(texts[0])
+        v_b = embed_text(texts[1])  # similar to a
+        v_c = embed_text(texts[2])  # dissimilar
+
+        sim_ab = cosine_similarity(v_a, v_b)
+        sim_ac = cosine_similarity(v_a, v_c)
+        assert sim_ab > sim_ac
+
+
+class TestRealRecencyScoring:
+    """Tests for score_summary with real recency normalisation."""
+
+    def _make_summary(self, turn_number: int, text: str = "summary") -> TurnSummary:
+        return TurnSummary(
+            turn_number=turn_number,
+            timestamp="2026-04-27T00:00:00Z",
+            summary=text,
+            embedding=[0.1] * 384,
+            importance_score=0.5,
+            full_message_id=f"msg_{turn_number}",
+            tokens_estimate=50,
+        )
+
+    def test_recent_turn_scores_higher_than_old(self):
+        """With equal semantic similarity, recent turns score higher."""
+        query_emb = [0.1] * 384
+        old = self._make_summary(0)
+        new = self._make_summary(9)
+        total = 10
+
+        score_old = score_summary(query_emb, old, QueryType.FACTUAL, total_turns=total)
+        score_new = score_summary(query_emb, new, QueryType.FACTUAL, total_turns=total)
+        assert score_new > score_old
+
+    def test_single_turn_recency_is_one(self):
+        """With only one turn, recency_score should be 1.0."""
+        query_emb = [0.1] * 384
+        s = self._make_summary(0)
+        score = score_summary(query_emb, s, QueryType.FACTUAL, total_turns=1)
+        assert 0.0 <= score <= 1.0
+
+    def test_score_bounded_zero_to_one(self):
+        """Scores are always in [0, 1]."""
+        query_emb = [0.1] * 384
+        for turn in range(10):
+            s = self._make_summary(turn)
+            score = score_summary(query_emb, s, QueryType.REASONING, total_turns=10)
+            assert 0.0 <= score <= 1.0
+
+
+class TestSystemCacheInjection:
+    """Tests for _inject_system_cache_control in openai_compat."""
+
+    def test_injects_cache_control_on_system_message(self):
+        from src.openai_compat import _inject_system_cache_control
+        messages = [
+            {'role': 'system', 'content': 'You are helpful.'},
+            {'role': 'user', 'content': 'Hello'},
+        ]
+        result = _inject_system_cache_control(messages)
+        assert result[0]['cache_control'] == {'type': 'ephemeral'}
+        assert result[1].get('cache_control') is None  # user msg untouched
+
+    def test_does_not_mutate_original_list(self):
+        from src.openai_compat import _inject_system_cache_control
+        messages = [{'role': 'system', 'content': 'You are helpful.'}]
+        _inject_system_cache_control(messages)
+        assert 'cache_control' not in messages[0]  # original unchanged
+
+    def test_no_system_message_unchanged(self):
+        from src.openai_compat import _inject_system_cache_control
+        messages = [{'role': 'user', 'content': 'Hello'}]
+        result = _inject_system_cache_control(messages)
+        assert result[0].get('cache_control') is None
+
+    def test_existing_cache_control_not_overwritten(self):
+        from src.openai_compat import _inject_system_cache_control
+        messages = [
+            {'role': 'system', 'content': 'You are helpful.',
+             'cache_control': {'type': 'persistent'}},
+        ]
+        result = _inject_system_cache_control(messages)
+        assert result[0]['cache_control'] == {'type': 'persistent'}  # not overwritten
+
+    def test_only_first_system_message_gets_cache_control(self):
+        from src.openai_compat import _inject_system_cache_control
+        messages = [
+            {'role': 'system', 'content': 'First system.'},
+            {'role': 'user', 'content': 'Hello'},
+            {'role': 'system', 'content': 'Second system.'},
+        ]
+        result = _inject_system_cache_control(messages)
+        assert result[0]['cache_control'] == {'type': 'ephemeral'}
+        assert result[2].get('cache_control') is None
 
 
 if __name__ == '__main__':

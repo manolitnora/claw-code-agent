@@ -13,6 +13,7 @@ from .agent_types import (
     UsageStats,
 )
 from .cost_ledger import log_api_call
+from .prompt_cache import extract_cache_stats
 
 
 class OpenAICompatError(RuntimeError):
@@ -117,6 +118,27 @@ def _parse_usage(payload: Any) -> UsageStats:
     )
 
 
+def _inject_system_cache_control(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a shallow-copied message list with cache_control on the system message.
+
+    The system message is always the first message with role='system'.
+    We add ``cache_control: {type: ephemeral}`` so that Claude API (or a
+    LiteLLM proxy that forwards it) can cache the static system prompt across
+    turns, saving ~90% of system-prompt token costs.
+
+    If no system message is found, the list is returned unchanged.
+    """
+    result = list(messages)  # shallow copy — don't mutate caller's list
+    for i, msg in enumerate(result):
+        if isinstance(msg, dict) and msg.get('role') == 'system':
+            if 'cache_control' not in msg:
+                result[i] = {**msg, 'cache_control': {'type': 'ephemeral'}}
+            break  # Only the first system message needs caching
+    return result
+
+
 def _build_response_format(
     schema: OutputSchemaConfig | None,
 ) -> dict[str, Any] | None:
@@ -174,10 +196,21 @@ class OpenAICompatClient:
             finish_reason = str(finish_reason)
 
         usage = _parse_usage(payload.get('usage'))
-        
-        # Log API call cost
+
+        # Log API call cost (includes cache creation/read tokens)
         model = model_override or self.config.model
         log_api_call(model, usage)
+
+        # Log cache performance when cache tokens are present
+        if usage.cache_creation_input_tokens or usage.cache_read_input_tokens:
+            cache_stats = extract_cache_stats(usage)
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                'prompt cache: creation=%d read=%d hit_rate=%.1f%%',
+                cache_stats.cache_creation_tokens,
+                cache_stats.cache_read_tokens,
+                cache_stats.cache_hit_rate * 100,
+            )
 
         return AssistantTurn(
             content=content,
@@ -267,6 +300,11 @@ class OpenAICompatClient:
         output_schema: OutputSchemaConfig | None,
         model_override: str | None = None,
     ) -> dict[str, Any]:
+        # Inject cache_control on the system message so the backend (LiteLLM /
+        # Claude API) can cache the static system prompt across turns.
+        # We shallow-copy the list to avoid mutating the caller's messages.
+        messages = _inject_system_cache_control(messages)
+
         payload: dict[str, Any] = {
             'model': model_override or self.config.model,
             'messages': messages,

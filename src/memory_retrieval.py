@@ -126,51 +126,52 @@ def score_summary(
     query_embedding: list[float],
     summary: TurnSummary,
     query_type: QueryType,
+    total_turns: int = 1,
 ) -> float:
     """Score a summary for relevance to a query.
-    
+
     Combines:
     - Semantic similarity (embedding cosine)
     - Importance score (decisions weighted higher)
     - Recency bias (recent turns weighted higher)
     - Query-type affinity (code reviews prefer recent)
-    
+
     Args:
         query_embedding: Embedding of the query
         summary: Turn summary to score
         query_type: Type of query (for weighting)
-    
+        total_turns: Total number of turns in the session (for recency normalisation)
+
     Returns:
         Score 0-1
     """
-    # Semantic similarity (0-1)
+    # Semantic similarity mapped from [-1,1] → [0,1]
     semantic_score = (cosine_similarity(query_embedding, summary.embedding) + 1) / 2
-    
+
     # Importance score (already 0-1)
     importance = summary.importance_score
-    
-    # Recency bias (recent turns score higher)
-    # Assume turn_number increases with time
-    # Normalize to 0-1 range (will be adjusted by caller)
-    recency_score = 0.5  # Placeholder, adjusted by caller
-    
-    # Query-type affinity
-    type_weight = 1.0
-    if query_type == QueryType.CODE_REVIEW:
-        type_weight = 1.2  # Prefer recent for code reviews
-    elif query_type == QueryType.DEBUGGING:
-        type_weight = 1.1  # Prefer recent for debugging
+
+    # Recency bias: turn_number / total_turns → 0 (oldest) … 1 (newest)
+    recency_score = summary.turn_number / max(1, total_turns - 1) if total_turns > 1 else 1.0
+
+    # Query-type affinity weights
+    # CODE_REVIEW / DEBUGGING lean on recency; REASONING leans on semantics
+    if query_type in (QueryType.CODE_REVIEW, QueryType.DEBUGGING):
+        w_semantic, w_importance, w_recency = 0.4, 0.2, 0.4
     elif query_type == QueryType.REASONING:
-        type_weight = 0.9  # Less recency bias for reasoning
-    
-    # Weighted combination
+        w_semantic, w_importance, w_recency = 0.6, 0.3, 0.1
+    elif query_type == QueryType.PLANNING:
+        w_semantic, w_importance, w_recency = 0.4, 0.4, 0.2
+    else:  # FACTUAL and default
+        w_semantic, w_importance, w_recency = 0.5, 0.3, 0.2
+
     score = (
-        0.5 * semantic_score +
-        0.3 * importance +
-        0.2 * recency_score
-    ) * type_weight
-    
-    return min(1.0, score)
+        w_semantic * semantic_score
+        + w_importance * importance
+        + w_recency * recency_score
+    )
+
+    return min(1.0, max(0.0, score))
 
 
 def retrieve_context(
@@ -203,13 +204,11 @@ def retrieve_context(
     if summary_index and summary_index.summaries:
         tier2_budget = budget.tier2_budget
         
-        # Score all summaries
+        # Score all summaries, passing total_turns for real recency normalisation
+        total_turns = len(summary_index.summaries)
         scores = []
         for i, summary in enumerate(summary_index.summaries):
-            # Adjust recency score based on position
-            recency = i / max(1, len(summary_index.summaries) - 1)
-            
-            score = score_summary(query_embedding, summary, query_type)
+            score = score_summary(query_embedding, summary, query_type, total_turns=total_turns)
             scores.append((score, i, summary))
         
         # Sort by score descending
