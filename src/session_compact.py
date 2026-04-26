@@ -104,6 +104,36 @@ def compact_stored_session(
         running += tokens
 
     keep.reverse()
+
+    # 2026-04-27: fix for orphan tool_result after in-place compaction.
+    # Anthropic's API rejects requests where the first kept message is a
+    # `tool_result` without its matching `tool_use` in the prior message.
+    # The naive tail-slice above can sever a tool-use / tool-result pair,
+    # dropping the tool_use into the compacted prefix and leaving the
+    # tool_result orphaned at the head of `keep`. This triggered HTTP 400
+    # errors in latti session 439c96ad31ac on 2026-04-26.
+    #
+    # Three tool_result shapes to detect:
+    #   - OpenAI/generic:   role='tool', tool_call_id set
+    #   - OpenAI-on-user:   role='user', tool_call_id set
+    #   - Anthropic native: role='user', content[*].type='tool_result'
+    def _is_tool_result(m: dict[str, Any]) -> bool:
+        role = m.get('role')
+        if role == 'tool':
+            return True
+        if role == 'user':
+            if m.get('tool_call_id') is not None:
+                return True
+            content = m.get('content')
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get('type') == 'tool_result':
+                        return True
+        return False
+
+    while keep and _is_tool_result(keep[0]):
+        keep.pop(0)
+
     dropped = len(messages) - len(keep)
     if dropped <= 0:
         return stored, 0

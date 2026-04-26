@@ -335,6 +335,24 @@ def compact_conversation(
     tail_count = min(preserve_count, max(total - prefix_count, 0))
     compact_end = total - tail_count
 
+    # 2026-04-27: orphan-tool_result fix (re-applied after refactor reverted).
+    # Walk compact_end forward past any leading tool_result messages so the
+    # preserved tail never starts with an orphan. Handles 3 shapes:
+    # role='tool', role='user' + tool_call_id, role='user' + content[*].type='tool_result'.
+    def _msg_is_tool_result(m) -> bool:
+        if m.role == 'tool':
+            return True
+        if m.role == 'user' and m.tool_call_id is not None:
+            return True
+        if m.role == 'user' and m.blocks:
+            for block in m.blocks:
+                if isinstance(block, dict) and block.get('type') == 'tool_result':
+                    return True
+        return False
+
+    while compact_end < total and _msg_is_tool_result(session.messages[compact_end]):
+        compact_end += 1
+
     if compact_end <= prefix_count:
         return CompactionResult(
             boundary_message=_build_boundary('Not enough messages after prefix.'),
