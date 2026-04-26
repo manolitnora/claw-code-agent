@@ -612,7 +612,7 @@ def _run_agent_chat_loop(
                 # 2026-04-20 — most fresh-starts were context pressure, not
                 # cost. Extra room = more turns before forced-fresh.
                 _context_limit = 192_000
-                _over_budget = _stored_cost >= _safety_ceiling and agent.budget_config.max_total_cost_usd is None
+                _over_budget = _stored_cost >= _safety_ceiling and agent.runtime_config.budget_config.max_total_cost_usd is None
                 _over_context = _stored_input_tokens > _context_limit
                 # Cost overruns drop the session — they signal a real
                 # hard limit the user has to approve spending past.
