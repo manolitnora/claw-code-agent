@@ -112,6 +112,55 @@ def gather_boot_context() -> str:
     if memory_md:
         sections.append(f'# YOUR MEMORY (loaded at boot — do NOT read MEMORY.md again)\n\n{memory_md}')
 
+    # 1b. Latti Vault — bidirectional autonomy memory
+    # Reads constraints + agency boundaries + any new user annotations from Raw/.
+    # This is the live reasoning surface: decisions, patterns, constraints I've written,
+    # plus perspective you've added. Read at every boot so vault feeds cognition loop.
+    try:
+        vault_root = Path(os.path.expanduser('~/Latti Vault/Wiki'))
+        vault_sections: list[str] = []
+
+        # Core autonomy pages — always load
+        constraints = _read_safe(vault_root / 'autonomy' / 'constraints.md', limit=1500)
+        if constraints:
+            vault_sections.append(f'## Constraint Catalog\n{constraints}')
+
+        agency = _read_safe(vault_root / 'autonomy' / 'agency-boundaries.md', limit=1200)
+        if agency:
+            vault_sections.append(f'## Agency Boundaries\n{agency}')
+
+        # Scan Raw/ for new user drops (files modified in last 7 days)
+        import time as _time
+        raw_dir = Path(os.path.expanduser('~/Latti Vault/Raw'))
+        new_drops: list[str] = []
+        if raw_dir.exists():
+            for f in sorted(raw_dir.iterdir()):
+                if f.suffix in ('.md', '.txt') and f.name != 'README.md':
+                    age_days = (_time.time() - f.stat().st_mtime) / 86400
+                    if age_days < 7:
+                        content = _read_safe(f, limit=800)
+                        if content:
+                            new_drops.append(f'### {f.name} (dropped {age_days:.1f}d ago)\n{content}')
+        if new_drops:
+            vault_sections.append('## New User Drops in Raw/\n' + '\n\n'.join(new_drops))
+
+        # Most recent session summary (last 3 days)
+        sessions_dir = vault_root / 'sessions'
+        if sessions_dir.exists():
+            session_files = sorted(sessions_dir.glob('*.md'), reverse=True)
+            if session_files:
+                latest = _read_safe(session_files[0], limit=800)
+                if latest:
+                    vault_sections.append(f'## Last Session Summary ({session_files[0].stem})\n{latest}')
+
+        if vault_sections:
+            sections.append(
+                '# LATTI VAULT (autonomy memory — decisions, constraints, user annotations)\n\n'
+                + '\n\n'.join(vault_sections)
+            )
+    except Exception:
+        pass  # best-effort; never block boot
+
     # 2. Current project state
     current_state = _read_safe(SHARED_MEMORY / 'project_current_state.md', limit=1500)
     if current_state:
