@@ -12,8 +12,11 @@ The scroll region handles the rest.
 from __future__ import annotations
 
 import os
+import select
 import shutil
 import sys
+import termios
+import tty
 
 # ---------------------------------------------------------------------------
 # ANSI
@@ -198,6 +201,116 @@ def status_footer() -> None:
 # Prompt — cursor moves to footer, then back to content area
 # ---------------------------------------------------------------------------
 
+# Paste detection: if a second line arrives within this many seconds of the
+# first, we're in paste mode and keep collecting until a deliberate Enter on
+# a blank line (or Ctrl+D).
+_PASTE_TIMEOUT = 0.08  # 80 ms — fast enough for paste, slow for human typing
+
+
+def _read_multiline() -> str:
+    """Read one user message, handling multi-line paste correctly.
+
+    UX contract:
+    - Single line + Enter  → submit immediately (normal case, unchanged)
+    - Paste (lines arrive <80ms apart) → collect all lines; show "[N lines]"
+      indicator; submit when user presses Enter on a blank line or Ctrl+D
+    - Ctrl+D on empty buffer → raise EOFError
+    - Ctrl+C → raise KeyboardInterrupt
+
+    Uses raw terminal mode so we can peek at stdin with select() without
+    blocking. Restores cooked mode before returning.
+    """
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    lines: list[str] = []
+    current: list[str] = []  # chars on the current line
+
+    def _flush_line() -> str:
+        line = ''.join(current)
+        current.clear()
+        return line
+
+    def _update_prompt_indicator(n_lines: int) -> None:
+        """Redraw the prompt row to show multiline indicator."""
+        r = _rows()
+        if n_lines > 0:
+            indicator = f'{BLUE}{BOLD}❯  {RESET}{CYAN}[{n_lines} line{"s" if n_lines != 1 else ""} — blank line or Ctrl+D to send]{RESET}'
+        else:
+            indicator = f'{BLUE}{BOLD}❯  {RESET}'
+        _w(f'\033[{r-2};1H\033[2K{indicator}')
+
+    try:
+        tty.setraw(fd)
+
+        while True:
+            # Wait for input; use a short timeout when we already have lines
+            # (so we can detect end-of-paste)
+            timeout = _PASTE_TIMEOUT if lines else None
+            ready, _, _ = select.select([sys.stdin], [], [], timeout)
+
+            if not ready:
+                # Timeout expired with no new data — paste is done.
+                # If we have collected lines, wait for explicit submit.
+                # (We stay in the loop; next keypress will decide.)
+                continue
+
+            ch = sys.stdin.read(1)
+
+            # Ctrl+C
+            if ch == '\x03':
+                raise KeyboardInterrupt
+
+            # Ctrl+D
+            if ch == '\x04':
+                if not current and not lines:
+                    raise EOFError
+                # Treat as submit
+                if current:
+                    lines.append(_flush_line())
+                break
+
+            # Enter / Return
+            if ch in ('\r', '\n'):
+                line = _flush_line()
+
+                if lines:
+                    # We're in multiline mode.
+                    if line == '':
+                        # Blank line = submit
+                        break
+                    else:
+                        lines.append(line)
+                        _update_prompt_indicator(len(lines))
+                else:
+                    # First line — check if more data arrives quickly (paste)
+                    ready2, _, _ = select.select([sys.stdin], [], [], _PASTE_TIMEOUT)
+                    if ready2:
+                        # More data incoming → paste mode
+                        lines.append(line)
+                        _update_prompt_indicator(len(lines))
+                    else:
+                        # Nothing more → single-line submit
+                        lines.append(line)
+                        break
+                continue
+
+            # Backspace (raw mode sends \x7f or \x08)
+            if ch in ('\x7f', '\x08'):
+                if current:
+                    current.pop()
+                    _w('\b \b')  # erase last char on screen
+                continue
+
+            # Printable character — echo it
+            current.append(ch)
+            _w(ch)
+
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    return '\n'.join(lines)
+
+
 def prompt() -> str:
     """Draw prompt in footer, get input, return cursor to content area."""
     r = _rows()
@@ -206,17 +319,19 @@ def prompt() -> str:
     # Draw the prompt line in the footer
     _w(f'\033[{r-2};1H\033[2K{BLUE}{BOLD}❯  {RESET}')
 
-    # Cursor is now on the prompt line — input() reads here
     try:
-        user_input = input()
+        user_input = _read_multiline()
     except (EOFError, KeyboardInterrupt):
         # Restore cursor to content area before raising
         _w(f'\033[{content_bottom};1H')
         _w(f'\n{GRAY}  goodbye{RESET}\n')
         raise
 
-    # Show what was typed (dim, so it's clear the input was captured)
-    _draw_footer(prompt_text=f'{DARK_GRAY}{user_input}{RESET}')
+    # Show what was typed (dim summary — truncate long pastes)
+    summary = user_input.replace('\n', ' ↵ ')
+    if len(summary) > 80:
+        summary = summary[:77] + '…'
+    _draw_footer(prompt_text=f'{DARK_GRAY}{summary}{RESET}')
 
     # Return cursor to bottom of content area so response appears there
     _w(f'\033[{content_bottom};1H')
