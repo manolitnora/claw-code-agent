@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -445,6 +446,25 @@ class LocalCodingAgent:
             effective_prompt,
             resumed=base_session is not None,
         )
+
+        # 2026-04-27: pre-prompt router re-wired after session-refactor removed it.
+        # Module at ~/.latti/lib/pre_prompt_router.py — pure-python port of pi's 4
+        # prompt-reactive extensions (research-before-build, skill-router,
+        # harness-router, depth-reasoner). Gated by LATTI_PROMPT_ROUTER env var
+        # (default 1 in shim). Failures must never break the model call.
+        if os.environ.get("LATTI_PROMPT_ROUTER", "0") == "1":
+            try:
+                import sys as _sys
+                _latti_lib = os.path.expanduser("~/.latti/lib")
+                if _latti_lib not in _sys.path:
+                    _sys.path.insert(0, _latti_lib)
+                from pre_prompt_router import route_prompt, format_injections  # type: ignore
+                _injections = route_prompt(effective_prompt)
+                if _injections:
+                    _block = format_injections(_injections)
+                    effective_prompt = f"{effective_prompt}\n\n{_block}"
+            except Exception:
+                pass
         self.managed_agent_id = self.agent_manager.start_agent(
             prompt=effective_prompt,
             parent_agent_id=self.parent_agent_id,
@@ -1432,25 +1452,49 @@ class LocalCodingAgent:
                     f'({session_turns} > {budget.max_session_turns}).'
                 ),
             )
-        # Safety net: when no explicit cost or model-call budget is configured,
-        # apply hard ceilings to prevent runaway API spend.
-        _SAFETY_MAX_COST_USD = 10.0
-        _SAFETY_MAX_MODEL_CALLS = 200
-        if budget.max_total_cost_usd is None and total_cost_usd > _SAFETY_MAX_COST_USD:
+        # 2026-04-27: third recurrence of this regression. The hardcoded
+        # _SAFETY_MAX_COST_USD = 10.0 ceiling keeps getting re-added by
+        # code refactors and silently killing long latti sessions at $10.14.
+        # User reported it twice today. This time: remove the ceiling
+        # entirely. The BudgetConfig defaults already provide explicit opt-in
+        # caps via --max-budget-usd / --max-model-calls; an implicit hidden
+        # wall on top of those is redundant and surprising.
+        #
+        # Env-var opt-in preserved for callers that want the safety net:
+        #   LATTI_SAFETY_MAX_COST_USD=10     # cost cap in USD, 0/unset = no wall
+        #   LATTI_SAFETY_MAX_MODEL_CALLS=200 # call cap, 0/unset = no wall
+        import os as _os
+        try:
+            _c_raw = _os.environ.get('LATTI_SAFETY_MAX_COST_USD', '').strip()
+            _SAFETY_MAX_COST_USD = float(_c_raw) if _c_raw else 0.0
+        except ValueError:
+            _SAFETY_MAX_COST_USD = 0.0
+        try:
+            _m_raw = _os.environ.get('LATTI_SAFETY_MAX_MODEL_CALLS', '').strip()
+            _SAFETY_MAX_MODEL_CALLS = int(_m_raw) if _m_raw else 0
+        except ValueError:
+            _SAFETY_MAX_MODEL_CALLS = 0
+
+        if (budget.max_total_cost_usd is None
+                and _SAFETY_MAX_COST_USD > 0
+                and total_cost_usd > _SAFETY_MAX_COST_USD):
             return BudgetDecision(
                 exceeded=True,
                 reason=(
                     f'Stopped: estimated cost (${total_cost_usd:.2f}) hit the '
                     f'safety ceiling (${_SAFETY_MAX_COST_USD:.2f}). '
-                    f'Set --max-budget-usd to raise.'
+                    f'Set --max-budget-usd to raise or unset LATTI_SAFETY_MAX_COST_USD.'
                 ),
             )
-        if budget.max_model_calls is None and model_calls > _SAFETY_MAX_MODEL_CALLS:
+        if (budget.max_model_calls is None
+                and _SAFETY_MAX_MODEL_CALLS > 0
+                and model_calls > _SAFETY_MAX_MODEL_CALLS):
             return BudgetDecision(
                 exceeded=True,
                 reason=(
                     f'Stopped: {model_calls} model calls hit the safety ceiling '
-                    f'({_SAFETY_MAX_MODEL_CALLS}). Set --max-model-calls to raise.'
+                    f'({_SAFETY_MAX_MODEL_CALLS}). '
+                    f'Set --max-model-calls or unset LATTI_SAFETY_MAX_MODEL_CALLS.'
                 ),
             )
         return BudgetDecision(exceeded=False)
@@ -3946,7 +3990,74 @@ class LocalCodingAgent:
                 final_output,
                 session_id=os.environ.get('LATTI_SESSION_ID'),
             )
+            # Audit the response for uncited claims (Phase 2 integration)
+            self._audit_response_claims(result, final_output)
         except Exception:
+            pass
+
+    def _audit_response_claims(self, result: AgentRunResult, final_output: str) -> None:
+        """Audit the response for uncited claims and log to audit journal.
+        
+        Gated by LATTI_AUDIT env var (default 1 when invoked via shim).
+        Best-effort; failures are swallowed to avoid disrupting the model loop.
+        """
+        import sys
+        from pathlib import Path
+        
+        # Check if audit is enabled
+        if os.environ.get('LATTI_AUDIT', '0') != '1':
+            return
+        
+        try:
+            latti_home = Path.home() / '.latti'
+            if not (latti_home / 'last_session').is_file():
+                return
+            
+            # Import the audit integration
+            sys.path.insert(0, str(latti_home))
+            from agent_audit_integration import audit_agent_response  # type: ignore[import-not-found]
+            
+            # Run the audit
+            check_hard_fail = os.environ.get('LATTI_AUDIT_HARD_FAIL', '0') == '1'
+            audit_result = audit_agent_response(
+                final_output,
+                fail_mode='warn',
+                check_hard_fail=check_hard_fail,
+            )
+            
+            # Log to audit journal
+            if audit_result:
+                import json
+                import time
+                journal_path = latti_home / 'memory' / 'audit_journal.jsonl'
+                journal_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                entry = {
+                    'timestamp': time.time(),
+                    'session_id': os.environ.get('LATTI_SESSION_ID', 'unknown'),
+                    'passed': audit_result.get('passed', False),
+                    'uncited_count': audit_result.get('uncited_count', 0),
+                    'severity_max': audit_result.get('severity_max', 0.0),
+                    'corrections': audit_result.get('corrections', []),
+                }
+                with open(journal_path, 'a') as f:
+                    f.write(json.dumps(entry) + '\n')
+                
+                # Generate auto-correction tasks (independent axis work)
+                # This breaks orbit: audit failures → auto-generated work
+                if not audit_result.get('passed', True):
+                    try:
+                        from audit_auto_correction import generate_correction_task, record_correction_task
+                        task = generate_correction_task(
+                            audit_result,
+                            session_id=os.environ.get('LATTI_SESSION_ID'),
+                        )
+                        if task:
+                            record_correction_task(task)
+                    except Exception:
+                        pass  # Fail silent on auto-correction generation
+        except Exception:
+            # Fail silent — must never break the model loop
             pass
 
     def _emit_cost_ledger(self, result: AgentRunResult) -> None:
