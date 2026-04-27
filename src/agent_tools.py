@@ -1140,6 +1140,188 @@ def default_tool_registry() -> dict[str, AgentTool]:
             },
             handler=_lattice_boolean_solve,
         ),
+        # ── Git tools ─────────────────────────────────────────────────────
+        AgentTool(
+            name='git_status',
+            description='Show working tree status: staged, unstaged, untracked files and current branch.',
+            parameters={'type': 'object', 'properties': {}},
+            handler=_git_status,
+        ),
+        AgentTool(
+            name='git_diff',
+            description='Show diff of unstaged changes, staged changes, or between two commits/branches.',
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'staged': {'type': 'boolean', 'description': 'Show staged (--cached) diff.'},
+                    'path': {'type': 'string', 'description': 'Limit diff to this file or directory.'},
+                    'base': {'type': 'string', 'description': 'Base ref (commit/branch). Omit for working-tree diff.'},
+                    'head': {'type': 'string', 'description': 'Head ref (default HEAD).'},
+                    'max_lines': {'type': 'integer', 'minimum': 1, 'maximum': 2000, 'description': 'Truncate output (default 400).'},
+                },
+            },
+            handler=_git_diff,
+        ),
+        AgentTool(
+            name='git_log',
+            description='Show recent commit log with hash, author, date, message.',
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'description': 'Number of commits (default 20).'},
+                    'path': {'type': 'string', 'description': 'Limit to commits touching this path.'},
+                    'oneline': {'type': 'boolean', 'description': 'One line per commit (default true).'},
+                },
+            },
+            handler=_git_log,
+        ),
+        AgentTool(
+            name='git_commit',
+            description='Stage all changed tracked files and create a commit. Never force-pushes. Refuses empty commits.',
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'message': {'type': 'string', 'description': 'Commit message.'},
+                    'paths': {
+                        'type': 'array',
+                        'items': {'type': 'string'},
+                        'description': 'Specific paths to stage. Omit to stage all tracked changes (git add -u).',
+                    },
+                },
+                'required': ['message'],
+            },
+            handler=_git_commit,
+        ),
+        # ── File management ────────────────────────────────────────────────
+        AgentTool(
+            name='move_file',
+            description='Move or rename a file or directory inside the workspace.',
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'source': {'type': 'string'},
+                    'destination': {'type': 'string'},
+                },
+                'required': ['source', 'destination'],
+            },
+            handler=_move_file,
+        ),
+        AgentTool(
+            name='delete_file',
+            description='Delete a file inside the workspace. Refuses to delete directories (use bash for that).',
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string'},
+                },
+                'required': ['path'],
+            },
+            handler=_delete_file,
+        ),
+        AgentTool(
+            name='make_dir',
+            description='Create a directory (and any missing parents) inside the workspace.',
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string'},
+                },
+                'required': ['path'],
+            },
+            handler=_make_dir,
+        ),
+        # ── Patch ──────────────────────────────────────────────────────────
+        AgentTool(
+            name='patch_file',
+            description=(
+                'Apply a unified diff patch to a workspace file. '
+                'Use when edit_file is impractical (many hunks, generated diffs). '
+                'Patch must be in unified diff format (--- a/  +++ b/  @@ hunks).'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Target file path (relative to workspace).'},
+                    'patch': {'type': 'string', 'description': 'Unified diff patch text.'},
+                    'fuzz': {'type': 'integer', 'minimum': 0, 'maximum': 3, 'description': 'Context fuzz factor (default 2).'},
+                },
+                'required': ['path', 'patch'],
+            },
+            handler=_patch_file,
+        ),
+        # ── Image read ─────────────────────────────────────────────────────
+        AgentTool(
+            name='image_read',
+            description=(
+                'Read an image file and return a base64-encoded data URI suitable for vision models. '
+                'Supports: png, jpg, jpeg, gif, webp. '
+                'Use to inspect screenshots, diagrams, charts, or UI mockups.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Path to image file (absolute or relative to workspace).'},
+                },
+                'required': ['path'],
+            },
+            handler=_image_read,
+        ),
+        # ── Run tests ──────────────────────────────────────────────────────
+        AgentTool(
+            name='run_tests',
+            description=(
+                'Run the test suite (pytest by default) and return structured pass/fail/error results. '
+                'Supports pytest, unittest, and npm test. '
+                'Returns: total, passed, failed, errors, duration, and failed test names.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Test file or directory (default: tests/).'},
+                    'pattern': {'type': 'string', 'description': 'pytest -k expression to filter tests.'},
+                    'runner': {'type': 'string', 'enum': ['pytest', 'unittest', 'npm'], 'description': 'Test runner (default: pytest).'},
+                    'timeout': {'type': 'integer', 'minimum': 5, 'maximum': 300, 'description': 'Timeout in seconds (default 60).'},
+                },
+            },
+            handler=_run_tests,
+        ),
+        # ── Memory ────────────────────────────────────────────────────────
+        AgentTool(
+            name='memory_write',
+            description=(
+                'Write a named memory entry that persists across turns and sessions. '
+                'Use for: decisions made, facts discovered, patterns noticed, things to remember. '
+                'Entries are stored in ~/.latti/memory/ as plain text.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'key': {'type': 'string', 'description': 'Memory key (slug, e.g. "db-schema", "user-prefs").'},
+                    'content': {'type': 'string', 'description': 'Content to store.'},
+                    'append': {'type': 'boolean', 'description': 'Append to existing entry instead of overwriting (default false).'},
+                },
+                'required': ['key', 'content'],
+            },
+            handler=_memory_write,
+        ),
+        AgentTool(
+            name='memory_read',
+            description='Read a named memory entry previously stored with memory_write. Returns content or empty string if not found.',
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'key': {'type': 'string', 'description': 'Memory key to read.'},
+                },
+                'required': ['key'],
+            },
+            handler=_memory_read,
+        ),
+        AgentTool(
+            name='memory_list',
+            description='List all memory keys stored with memory_write.',
+            parameters={'type': 'object', 'properties': {}},
+            handler=_memory_list,
+        ),
         AgentTool(
             name='self_score',
             description=(
@@ -3591,3 +3773,347 @@ def _stream_static_text_result(
             metadata=metadata,
         ),
     )
+
+
+# =============================================================================
+# New tool handlers — git, file-management, patch, image, run_tests, memory
+# =============================================================================
+
+import base64 as _base64
+import pathlib as _pathlib
+import re as _re
+import shutil as _shutil
+import subprocess as _subprocess
+import tempfile as _tempfile
+
+
+def _cwd(context: ToolExecutionContext) -> _pathlib.Path:
+    """Return the workspace root as a Path."""
+    return _pathlib.Path(getattr(context, 'cwd', '.') or '.').resolve()
+
+
+def _safe_path(context: ToolExecutionContext, rel: str) -> _pathlib.Path:
+    """Resolve rel relative to workspace and verify it stays inside."""
+    base = _cwd(context)
+    p = (base / rel).resolve()
+    if not str(p).startswith(str(base)):
+        raise ToolExecutionError(f'Path escapes workspace: {rel}')
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Git tools
+# ---------------------------------------------------------------------------
+
+def _git_run(args: list[str], cwd: _pathlib.Path, timeout: int = 30) -> tuple[int, str]:
+    """Run a git command; return (returncode, combined stdout+stderr)."""
+    try:
+        r = _subprocess.run(
+            ['git'] + args,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        out = (r.stdout or '') + (r.stderr or '')
+        return r.returncode, out.strip()
+    except FileNotFoundError:
+        return 1, 'git not found in PATH'
+    except _subprocess.TimeoutExpired:
+        return 1, f'git timed out after {timeout}s'
+
+
+def _git_status(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    cwd = _cwd(context)
+    rc, branch = _git_run(['branch', '--show-current'], cwd)
+    rc2, out = _git_run(['status', '--short', '--branch'], cwd)
+    if rc2 != 0:
+        raise ToolExecutionError(f'git status failed: {out}')
+    return out if out else 'working tree clean'
+
+
+def _git_diff(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    cwd       = _cwd(context)
+    staged    = arguments.get('staged', False)
+    path      = arguments.get('path', '')
+    base      = arguments.get('base', '')
+    head      = arguments.get('head', 'HEAD')
+    max_lines = int(arguments.get('max_lines', 400))
+
+    args = ['diff']
+    if staged:
+        args.append('--cached')
+    if base:
+        args += [f'{base}..{head}']
+    args += ['--']
+    if path:
+        args.append(path)
+
+    rc, out = _git_run(args, cwd)
+    if rc != 0:
+        raise ToolExecutionError(f'git diff failed: {out}')
+    if not out:
+        return 'no differences'
+    lines = out.splitlines()
+    if len(lines) > max_lines:
+        out = '\n'.join(lines[:max_lines]) + f'\n… ({len(lines) - max_lines} more lines truncated)'
+    return out
+
+
+def _git_log(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    cwd     = _cwd(context)
+    limit   = int(arguments.get('limit', 20))
+    path    = arguments.get('path', '')
+    oneline = arguments.get('oneline', True)
+
+    args = ['log', f'-{limit}']
+    if oneline:
+        args.append('--oneline')
+    else:
+        args += ['--pretty=format:%h %an %ar  %s']
+    args += ['--']
+    if path:
+        args.append(path)
+
+    rc, out = _git_run(args, cwd)
+    if rc != 0:
+        raise ToolExecutionError(f'git log failed: {out}')
+    return out if out else 'no commits'
+
+
+def _git_commit(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    cwd     = _cwd(context)
+    message = arguments.get('message', '').strip()
+    paths   = arguments.get('paths') or []
+
+    if not message:
+        raise ToolExecutionError('commit message is required')
+
+    # Stage
+    if paths:
+        for p in paths:
+            rc, out = _git_run(['add', '--', p], cwd)
+            if rc != 0:
+                raise ToolExecutionError(f'git add {p} failed: {out}')
+    else:
+        rc, out = _git_run(['add', '-u'], cwd)
+        if rc != 0:
+            raise ToolExecutionError(f'git add -u failed: {out}')
+
+    # Check something is staged
+    rc, staged = _git_run(['diff', '--cached', '--name-only'], cwd)
+    if not staged.strip():
+        return 'nothing to commit (no tracked changes staged)'
+
+    # Commit
+    rc, out = _git_run(['commit', '-m', message], cwd)
+    if rc != 0:
+        raise ToolExecutionError(f'git commit failed: {out}')
+    return out
+
+
+# ---------------------------------------------------------------------------
+# File management
+# ---------------------------------------------------------------------------
+
+def _move_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    src  = _safe_path(context, arguments['source'])
+    dest = _safe_path(context, arguments['destination'])
+    if not src.exists():
+        raise ToolExecutionError(f'source does not exist: {arguments["source"]}')
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _shutil.move(str(src), str(dest))
+    return f'moved {arguments["source"]} → {arguments["destination"]}'
+
+
+def _delete_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    p = _safe_path(context, arguments['path'])
+    if not p.exists():
+        raise ToolExecutionError(f'file not found: {arguments["path"]}')
+    if p.is_dir():
+        raise ToolExecutionError('delete_file refuses directories — use bash rm -rf if intentional')
+    p.unlink()
+    return f'deleted {arguments["path"]}'
+
+
+def _make_dir(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    p = _safe_path(context, arguments['path'])
+    p.mkdir(parents=True, exist_ok=True)
+    return f'created {arguments["path"]}'
+
+
+# ---------------------------------------------------------------------------
+# Patch
+# ---------------------------------------------------------------------------
+
+def _patch_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    """Apply a unified diff patch using the `patch` CLI."""
+    path  = _safe_path(context, arguments['path'])
+    patch = arguments.get('patch', '')
+    fuzz  = int(arguments.get('fuzz', 2))
+
+    if not patch.strip():
+        raise ToolExecutionError('patch is empty')
+    if not path.exists():
+        raise ToolExecutionError(f'target file not found: {arguments["path"]}')
+
+    # Write patch to temp file
+    with _tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as tf:
+        tf.write(patch)
+        patch_path = tf.name
+
+    try:
+        r = _subprocess.run(
+            ['patch', f'--fuzz={fuzz}', '--forward', str(path), patch_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        out = (r.stdout or '') + (r.stderr or '')
+        if r.returncode != 0:
+            raise ToolExecutionError(f'patch failed: {out.strip()}')
+        return out.strip() or f'patch applied to {arguments["path"]}'
+    finally:
+        _pathlib.Path(patch_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Image read
+# ---------------------------------------------------------------------------
+
+_SUPPORTED_IMAGE_TYPES = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+_IMAGE_MIME = {
+    '.png':  'image/png',
+    '.jpg':  'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif':  'image/gif',
+    '.webp': 'image/webp',
+}
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+def _image_read(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    raw = arguments.get('path', '')
+    # Allow absolute paths (screenshots outside workspace)
+    p = _pathlib.Path(raw).expanduser().resolve()
+    if not p.exists():
+        # Try workspace-relative
+        try:
+            p = _safe_path(context, raw)
+        except Exception:
+            pass
+    if not p.exists():
+        raise ToolExecutionError(f'image not found: {raw}')
+
+    ext = p.suffix.lower()
+    if ext not in _SUPPORTED_IMAGE_TYPES:
+        raise ToolExecutionError(f'unsupported image type {ext}. Supported: {", ".join(_SUPPORTED_IMAGE_TYPES)}')
+
+    size = p.stat().st_size
+    if size > _MAX_IMAGE_BYTES:
+        raise ToolExecutionError(f'image too large ({size // 1024}KB > 5MB limit)')
+
+    mime    = _IMAGE_MIME[ext]
+    data    = _base64.b64encode(p.read_bytes()).decode()
+    data_uri = f'data:{mime};base64,{data}'
+    return (
+        f'image:{p.name} ({size // 1024}KB {mime})\n'
+        f'data_uri:{data_uri}'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Run tests
+# ---------------------------------------------------------------------------
+
+def _run_tests(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    cwd     = _cwd(context)
+    path    = arguments.get('path', 'tests/')
+    pattern = arguments.get('pattern', '')
+    runner  = arguments.get('runner', 'pytest')
+    timeout = int(arguments.get('timeout', 60))
+
+    if runner == 'pytest':
+        cmd = ['python3', '-m', 'pytest', '-v', '--tb=short', '--no-header', '-q']
+        if pattern:
+            cmd += ['-k', pattern]
+        cmd.append(path)
+    elif runner == 'unittest':
+        cmd = ['python3', '-m', 'unittest', 'discover', path]
+    elif runner == 'npm':
+        cmd = ['npm', 'test', '--', '--watchAll=false']
+    else:
+        raise ToolExecutionError(f'unknown runner: {runner}')
+
+    try:
+        r = _subprocess.run(
+            cmd, cwd=str(cwd),
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except _subprocess.TimeoutExpired:
+        raise ToolExecutionError(f'tests timed out after {timeout}s')
+    except FileNotFoundError as e:
+        raise ToolExecutionError(f'runner not found: {e}')
+
+    out = (r.stdout or '') + (r.stderr or '')
+
+    # Parse pytest summary line
+    summary = ''
+    for line in reversed(out.splitlines()):
+        if _re.search(r'\d+ passed|\d+ failed|\d+ error', line):
+            summary = line.strip()
+            break
+
+    status = 'PASS' if r.returncode == 0 else 'FAIL'
+    result = f'{status}  {summary}\n\n{out[-3000:]}' if len(out) > 3000 else f'{status}  {summary}\n\n{out}'
+    if r.returncode != 0:
+        raise ToolExecutionError(result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Memory
+# ---------------------------------------------------------------------------
+
+_MEMORY_DIR = _pathlib.Path.home() / '.latti' / 'memory'
+
+
+def _memory_key_path(key: str) -> _pathlib.Path:
+    # Sanitize key to safe filename
+    safe = _re.sub(r'[^a-zA-Z0-9_\-.]', '_', key)
+    if not safe:
+        raise ToolExecutionError('memory key must be non-empty')
+    return _MEMORY_DIR / f'{safe}.md'
+
+
+def _memory_write(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    key     = arguments.get('key', '').strip()
+    content = arguments.get('content', '')
+    append  = arguments.get('append', False)
+
+    p = _memory_key_path(key)
+    _MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+
+    if append and p.exists():
+        existing = p.read_text(encoding='utf-8')
+        p.write_text(existing + '\n' + content, encoding='utf-8')
+        return f'appended to memory:{key} ({p.stat().st_size} bytes total)'
+    else:
+        p.write_text(content, encoding='utf-8')
+        return f'wrote memory:{key} ({len(content)} bytes)'
+
+
+def _memory_read(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    key = arguments.get('key', '').strip()
+    p   = _memory_key_path(key)
+    if not p.exists():
+        return f'memory:{key} — not found'
+    return p.read_text(encoding='utf-8')
+
+
+def _memory_list(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    _MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    keys = sorted(p.stem for p in _MEMORY_DIR.glob('*.md'))
+    if not keys:
+        return 'no memory entries'
+    return '\n'.join(keys)
