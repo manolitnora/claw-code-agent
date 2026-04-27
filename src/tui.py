@@ -208,7 +208,16 @@ def _build_status2() -> str:
 
 
 def _draw_footer(prompt_text: str = '') -> None:
-    """Draw the 5-line footer using DEC save/restore."""
+    """Draw the 5-line footer at absolute row positions.
+
+    No DEC save/restore — that was causing cursor corruption (the save would
+    capture a footer-row position after any drift, and restore would put the
+    cursor back there, splitting subsequent content into two columns).
+
+    Contract: after this call the cursor sits at content_bottom.  Callers
+    that need the cursor somewhere else (e.g. banner → row 1) must move it
+    explicitly AFTER calling _draw_footer.
+    """
     _ensure_scroll_region()
     r = _rows()
     c = _cols()
@@ -216,12 +225,7 @@ def _draw_footer(prompt_text: str = '') -> None:
     stat1 = _build_status1()
     stat2 = _build_status2()
 
-    # Always save from content_bottom — never from inside footer rows.
-    # If cursor drifted into footer due to prior corruption, saving there
-    # and restoring later causes the two-column split in the screenshot.
     content_bottom = r - _FOOTER_LINES
-    _w(f'\033[{content_bottom};1H')  # pin cursor to content area before save
-    _w('\0337')  # DEC save cursor (now always at content_bottom)
     _w(f'\033[{r-4};1H\033[2K{div}')
     if prompt_text:
         _w(f'\033[{r-3};1H\033[2K{DARK_GRAY}  {prompt_text}{RESET}')
@@ -230,7 +234,8 @@ def _draw_footer(prompt_text: str = '') -> None:
     _w(f'\033[{r-2};1H\033[2K{div}')
     _w(f'\033[{r-1};1H\033[2K{stat1}')
     _w(f'\033[{r};1H\033[2K{stat2}')
-    _w('\0338')  # DEC restore cursor
+    # Land cursor at content_bottom — safe position for content writes
+    _w(f'\033[{content_bottom};1H')
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +251,10 @@ def banner() -> None:
     _active    = True
     _last_rows = r
     _draw_footer()
-    _w(f'\n{G_BRIGHT}{BOLD}  ◆ Latti{RESET}{GRAY}  — lattice mind  {DIM}(claude-code style){RESET}\n')
+    # _draw_footer lands cursor at content_bottom — move back to top so
+    # banner text and boot info flow from row 1 downward.
+    _w('\033[1;1H')
+    _w(f'\n{G_BRIGHT}{BOLD}  ◆ Latti{RESET}{GRAY}  — lattice mind{RESET}\n')
     _w(f'{DARK_GRAY}  {"─" * 40}{RESET}\n\n')
 
 
@@ -263,7 +271,11 @@ def cleanup() -> None:
 
 
 def status_footer() -> None:
-    """Redraw footer with current state. Called after each turn."""
+    """Redraw footer with current state. Called after each turn.
+
+    _draw_footer() lands cursor at content_bottom — correct for next
+    content write (streaming response starts there and scrolls upward).
+    """
     _ensure_scroll_region()
     _draw_footer()
 
