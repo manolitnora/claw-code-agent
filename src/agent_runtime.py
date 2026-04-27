@@ -1272,6 +1272,9 @@ class LocalCodingAgent:
                 stop_reason=turn.finish_reason,
                 usage=turn.usage,
             )
+            # Display thinking if present (o1/o3 models)
+            if turn.thinking:
+                _tui.thinking_block(turn.thinking, token_count=turn.usage.reasoning_tokens or 0)
             return turn, ()
 
         assistant_index = session.start_assistant(
@@ -1280,6 +1283,7 @@ class LocalCodingAgent:
         usage = UsageStats()
         finish_reason: str | None = None
         events: list[StreamEvent] = []
+        thinking_text = ''
 
         # TUI stream renderer for formatted output
         from . import tui as _tui
@@ -1294,7 +1298,9 @@ class LocalCodingAgent:
             model_override=model_override,
         ):
             events.append(event)
-            if event.type == 'content_delta':
+            if event.type == 'thinking_delta':
+                thinking_text += event.delta
+            elif event.type == 'content_delta':
                 session.append_assistant_delta(assistant_index, event.delta)
                 renderer.token(event.delta)
                 has_content = True
@@ -1326,7 +1332,11 @@ class LocalCodingAgent:
             finish_reason=finish_reason,
             raw_message=assistant_message.to_openai_message(),
             usage=usage,
+            thinking=thinking_text,
         )
+        # Display thinking if present (o1/o3 models)
+        if thinking_text:
+            _tui.thinking_block(thinking_text, token_count=usage.reasoning_tokens or 0)
         return turn, tuple(events)
 
     @staticmethod

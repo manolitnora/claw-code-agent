@@ -197,6 +197,15 @@ class OpenAICompatClient:
 
         usage = _parse_usage(payload.get('usage'))
 
+        # Extract thinking from o1/o3 models
+        thinking = ''
+        content_blocks = message.get('content')
+        if isinstance(content_blocks, list):
+            for block in content_blocks:
+                if isinstance(block, dict) and block.get('type') == 'thinking':
+                    thinking = block.get('thinking', '')
+                    break
+
         # Log API call cost (includes cache creation/read tokens)
         model = model_override or self.config.model
         log_api_call(model, usage)
@@ -218,6 +227,7 @@ class OpenAICompatClient:
             finish_reason=finish_reason,
             raw_message=message,
             usage=usage,
+            thinking=thinking,
         )
 
     def stream(
@@ -413,6 +423,14 @@ class OpenAICompatClient:
             delta = choice.get('delta')
             if not isinstance(delta, dict):
                 delta = {}
+            # Handle thinking blocks from o1/o3 models
+            thinking = delta.get('thinking')
+            if isinstance(thinking, str) and thinking:
+                yield StreamEvent(
+                    type='thinking_delta',
+                    delta=thinking,
+                    raw_event=choice,
+                )
             content = delta.get('content')
             if isinstance(content, str) and content:
                 yield StreamEvent(

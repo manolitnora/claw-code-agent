@@ -86,6 +86,7 @@ def _add_agent_common_args(parser: argparse.ArgumentParser, *, include_backend: 
     parser.add_argument('--max-delegated-tasks', type=int)
     parser.add_argument('--max-model-calls', type=int)
     parser.add_argument('--max-session-turns', type=int)
+    parser.add_argument('--max-output-chars', type=int, default=50000)
     parser.add_argument('--response-schema-file')
     parser.add_argument('--response-schema-name')
     parser.add_argument('--response-schema-strict', action='store_true')
@@ -99,6 +100,7 @@ def _build_runtime_config(args: argparse.Namespace) -> AgentRuntimeConfig:
     return AgentRuntimeConfig(
         cwd=Path(args.cwd).resolve(),
         max_turns=getattr(args, 'max_turns', 12),
+        max_output_chars=getattr(args, 'max_output_chars', 50000),
         permissions=AgentPermissions(
             allow_file_write=args.allow_write,
             allow_shell_commands=args.allow_shell,

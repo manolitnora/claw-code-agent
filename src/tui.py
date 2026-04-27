@@ -505,3 +505,19 @@ def thinking_start() -> None:
 def thinking_clear() -> None:
     _w('\033[A\033[2K')
     sys.stdout.flush()
+
+def thinking_block(thinking_text: str, token_count: int = 0) -> None:
+    """Display extended thinking from o1/o3 models."""
+    if not thinking_text:
+        return
+    _w(f'\n{MAGENTA}[THINKING]{RESET}')
+    if token_count > 0:
+        _w(f' {CYAN}({token_count} tokens){RESET}')
+    _w('\n')
+    # Truncate very long thinking to first 500 chars for display
+    display_text = thinking_text[:500]
+    if len(thinking_text) > 500:
+        display_text += f'\n{CYAN}... ({len(thinking_text) - 500} more chars){RESET}'
+    _w(display_text)
+    _w('\n')
+    sys.stdout.flush()
