@@ -178,7 +178,7 @@ def _draw_footer(prompt_text: str = '') -> None:
     if prompt_text:
         _w(f'\033[{r-2};1H\033[2K{DARK_GRAY}  {prompt_text}{RESET}')
     else:
-        _w(f'\033[{r-2};1H\033[2K{BLUE}{BOLD}❯  {RESET}')
+        _w(f'\033[{r-2};1H\033[2K{BLUE}{BOLD}❯  {WHITE}')
     _w(f'\033[{r-1};1H\033[2K{DARK_GRAY}{div}{RESET}')
     _w(f'\033[{r};1H\033[2K{DARK_GRAY}{status}{RESET}')
     _w('\0338')  # DEC restore cursor
@@ -257,9 +257,9 @@ def _read_multiline() -> str:
         """Redraw the prompt row to show multiline indicator."""
         r = _rows()
         if n_lines > 0:
-            indicator = f'{BLUE}{BOLD}❯  {RESET}{CYAN}[{n_lines} line{"s" if n_lines != 1 else ""} — blank line or Ctrl+D to send]{RESET}'
+            indicator = f'{BLUE}{BOLD}❯  {RESET}{CYAN}[{n_lines} line{"s" if n_lines != 1 else ""} — blank line or Ctrl+D to send]{WHITE}'
         else:
-            indicator = f'{BLUE}{BOLD}❯  {RESET}'
+            indicator = f'{BLUE}{BOLD}❯  {WHITE}'
         _w(f'\033[{r-2};1H\033[2K{indicator}')
 
     try:
@@ -341,7 +341,7 @@ def prompt() -> str:
     content_bottom = r - _FOOTER_LINES
 
     # Draw the prompt line in the footer
-    _w(f'\033[{r-2};1H\033[2K{BLUE}{BOLD}❯  {RESET}')
+    _w(f'\033[{r-2};1H\033[2K{BLUE}{BOLD}❯  {WHITE}')
 
     try:
         user_input = _read_multiline()
