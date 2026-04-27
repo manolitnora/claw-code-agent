@@ -79,6 +79,23 @@ _state = {
 }
 
 _active = False
+_last_rows: int = 0  # track terminal height; re-establish scroll region on change
+
+
+def _ensure_scroll_region() -> None:
+    """(Re-)set the scroll region to the content area.
+
+    Called at every footer draw and at prompt entry so that terminal resize
+    or any escape sequence that resets the scroll region never corrupts the
+    layout.  Safe to call when the region is already correct — the terminal
+    ignores a no-op set.
+    """
+    global _last_rows, _active
+    r = _rows()
+    if r != _last_rows or not _active:
+        _w(f'\033[1;{r - _FOOTER_LINES}r')  # scroll region: rows 1..(r-4)
+        _last_rows = r
+        _active = True
 
 
 def set_state(
@@ -155,6 +172,7 @@ def _draw_footer(prompt_text: str = '') -> None:
     div = '─' * c
     status = _build_status()
 
+    _ensure_scroll_region()
     _w('\0337')  # DEC save cursor
     _w(f'\033[{r-3};1H\033[2K{DARK_GRAY}{div}{RESET}')
     if prompt_text:
@@ -172,11 +190,12 @@ def _draw_footer(prompt_text: str = '') -> None:
 
 def banner() -> None:
     """Clear screen, set scroll region, draw footer, print banner text."""
-    global _active
+    global _active, _last_rows
     r = _rows()
     _w('\033[2J\033[H')  # clear + cursor home
     _w(f'\033[1;{r - _FOOTER_LINES}r')  # scroll region: content area
     _active = True
+    _last_rows = r
     _draw_footer()
     # Banner text goes into the content area (cursor is at home)
     _w(f'\n{BLUE}{BOLD}  ◆ Latti Nora{RESET}{GRAY}  — lattice mind{RESET}\n')
@@ -185,22 +204,19 @@ def banner() -> None:
 
 def cleanup() -> None:
     """Restore terminal on exit."""
-    global _active
+    global _active, _last_rows
     if _active:
         r = _rows()
         _w(f'\033[{r - 3};1H\033[J')  # clear footer area
-        _w(f'\033[1;{r}r')             # reset scroll region
+        _w(f'\033[1;{r}r')             # reset scroll region to full terminal
         _w(f'\033[{r};1H\n')           # cursor to bottom
         _active = False
+        _last_rows = 0
 
 
 def status_footer() -> None:
     """Redraw footer with current state. Called after each turn."""
-    global _active
-    if not _active:
-        r = _rows()
-        _w(f'\033[1;{r - _FOOTER_LINES}r')
-        _active = True
+    _ensure_scroll_region()  # re-establishes region if rows changed
     _draw_footer()
 
 
@@ -320,6 +336,7 @@ def _read_multiline() -> str:
 
 def prompt() -> str:
     """Draw prompt in footer, get input, return cursor to content area."""
+    _ensure_scroll_region()  # guard against resize between turns
     r = _rows()
     content_bottom = r - _FOOTER_LINES
 
