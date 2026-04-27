@@ -216,7 +216,12 @@ def _draw_footer(prompt_text: str = '') -> None:
     stat1 = _build_status1()
     stat2 = _build_status2()
 
-    _w('\0337')  # DEC save cursor
+    # Always save from content_bottom — never from inside footer rows.
+    # If cursor drifted into footer due to prior corruption, saving there
+    # and restoring later causes the two-column split in the screenshot.
+    content_bottom = r - _FOOTER_LINES
+    _w(f'\033[{content_bottom};1H')  # pin cursor to content area before save
+    _w('\0337')  # DEC save cursor (now always at content_bottom)
     _w(f'\033[{r-4};1H\033[2K{div}')
     if prompt_text:
         _w(f'\033[{r-3};1H\033[2K{DARK_GRAY}  {prompt_text}{RESET}')
@@ -377,17 +382,12 @@ def prompt() -> str:
 
 def user_message(text: str) -> None:
     """Display the user's message as a highlighted dark-green band."""
-    c     = _cols()
+    _ensure_scroll_region()  # re-pin before user band
     lines = text.split('\n') if '\n' in text else [text]
-    pad   = ' ' * c
-    _w(f'\n{BG_USER}')
+    _w(f'\n')
     for line in lines:
-        display = f'  {line}'
-        # pad to full width for solid band
-        import re as _re
-        plain = _re.sub(r'\033\[[^m]*m', '', display)
-        spaces = max(0, c - len(plain))
-        _w(f'{OFF_WHITE}{display}{" " * spaces}{RESET}\n')
+        # \033[K fills rest of line with BG_USER — no manual padding needed
+        _w(f'{BG_USER}{OFF_WHITE}  {line}\033[K{RESET}\n')
     _w(RESET)
 
 
@@ -506,18 +506,18 @@ _tool_line_counts: dict[str, int] = {}
 
 
 def tool_start(name: str, detail: str = '') -> None:
-    """pi-style tool header: dark band with $ command."""
-    c     = _cols()
+    """pi-style tool header: dark band with icon + label + command."""
+    _ensure_scroll_region()  # re-pin before every tool block
     icon  = _tool_icon(name)
     label = _tool_label(name)
     cmd   = detail if detail else label
-
-    # Header band: dark bg, green $ prefix, command in bright white
-    header = f'  {icon} {G_BRIGHT}{label}{RESET}  {DARK_GRAY}{cmd}{RESET}'
-    import re as _re
-    plain  = _re.sub(r'\033\[[^m]*m', '', header)
-    spaces = max(0, c - len(plain))
-    _w(f'\n{BG_TOOL}{header}{" " * spaces}{RESET}\n')
+    # Truncate so line never wraps (wrapping corrupts scroll region)
+    max_cmd = max(10, _cols() - len(label) - 10)
+    if len(cmd) > max_cmd:
+        cmd = cmd[:max_cmd - 1] + '…'
+    # \033[K fills rest of line with current background —
+    # avoids manual char-counting which breaks on wide unicode/emoji.
+    _w(f'\n{BG_TOOL}{G_MID}{BOLD}{icon} {label}{RESET}{BG_TOOL}  {DARK_GRAY}{cmd}\033[K{RESET}\n')
 
 
 def tool_result(name: str, summary: str) -> None:
@@ -543,9 +543,8 @@ def tool_result(name: str, summary: str) -> None:
     if n_lines > 1:
         _w(f'{DARK_GRAY}  … ({n_lines - 1} more line{"s" if n_lines > 2 else ""}, not shown){RESET}\n')
 
-    # Separator after tool output (thin, full-width)
-    c   = _cols()
-    _w(f'{DARK_GRAY}{"─" * c}{RESET}\n')
+    # Thin separator — use \033[K so it never wraps on narrow terminals
+    _w(f'{DARK_GRAY}  {"─" * (_cols() - 2)}{RESET}\n')
 
 
 def tool_error(name: str, error: str) -> None:
@@ -554,9 +553,8 @@ def tool_error(name: str, error: str) -> None:
         error = _sanitize(error)
     except Exception:
         pass
-    c = _cols()
     _w(f'{RED}  ⎿ {error[:120]}{RESET}\n')
-    _w(f'{DARK_GRAY}{"─" * c}{RESET}\n')
+    _w(f'{DARK_GRAY}  {"─" * (_cols() - 2)}{RESET}\n')
 
 
 def _tool_icon(name: str) -> str:
