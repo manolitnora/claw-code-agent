@@ -606,6 +606,36 @@ def _run_agent_chat_loop(
         # Echo user message as pi-style highlighted band
         if use_tui:
             tui.user_message(normalized)
+
+        # --- Slash commands (intercepted before LLM) ---
+        if normalized.startswith('/'):
+            from .slash_commands import is_command, handle_command, CommandContext
+            if is_command(normalized):
+                _cmd_ctx = CommandContext(
+                    agent=agent,
+                    active_session_id=active_session_id,
+                    turn_count=turn_count,
+                    cumulative_cost=result.total_cost_usd if 'result' in dir() and result else 0.0,
+                    cumulative_tokens=cumulative_input_tokens + cumulative_output_tokens,
+                    use_tui=use_tui,
+                    tui=tui,
+                    tui_heal=tui_heal if use_tui else None,
+                    output_func=output_func,
+                )
+                _cmd_result = handle_command(normalized, _cmd_ctx)
+                if _cmd_result.exit_session:
+                    if use_tui:
+                        tui_heal.uninstall()
+                        tui.cleanup()
+                        tui.info('goodbye')
+                    else:
+                        output_func('chat_ended=user_exit')
+                    return 0
+                if _cmd_result.new_session:
+                    active_session_id = None
+                    _persist_last_session(None)
+                continue  # don't send to LLM
+
         if normalized in {'/exit', '/quit'}:
             if use_tui:
                 tui_heal.uninstall()
