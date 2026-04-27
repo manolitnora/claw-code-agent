@@ -1112,6 +1112,35 @@ def default_tool_registry() -> dict[str, AgentTool]:
             handler=_lattice_solve,
         ),
         AgentTool(
+            name='lattice_boolean_solve',
+            description=(
+                'Solve a discrete optimization problem over {0,1}^n using boolean lattice. '
+                'Uses bit-flip simulated annealing with three-phase adaptive temperature. '
+                'Input: problem statement with variables and optional constraints. '
+                'Example: "minimize 3*use_opus + 2*use_cache with variables [use_opus, use_cache] '
+                'subject to [use_opus + use_cache <= 1]". '
+                'Returns optimal bit assignment, cost, confidence, feasibility, and marginal probabilities. '
+                'Use for: model selection, constraint activation, pattern matching.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'problem': {
+                        'type': 'string',
+                        'description': 'The boolean optimization problem in natural language format.',
+                    },
+                    'samples': {
+                        'type': 'integer',
+                        'minimum': 500,
+                        'maximum': 100000,
+                        'description': 'Number of MC samples (default: 5000).',
+                    },
+                },
+                'required': ['problem'],
+            },
+            handler=_lattice_boolean_solve,
+        ),
+        AgentTool(
             name='self_score',
             description=(
                 'Score your own response quality. Pass the text of your response '
@@ -3113,6 +3142,23 @@ def _lattice_solve(
 
     from .lattice_solver import parse_and_solve
     return parse_and_solve(problem, samples)
+
+
+def _lattice_boolean_solve(
+    arguments: dict[str, Any],
+    context: ToolExecutionContext,
+) -> str:
+    problem = arguments.get('problem', '')
+    if not isinstance(problem, str) or not problem.strip():
+        raise ToolExecutionError('problem must be a non-empty string')
+
+    samples = arguments.get('samples', 5000)
+    if not isinstance(samples, int):
+        samples = 5000
+    samples = max(500, min(100000, samples))
+
+    from .lattice_boolean_solve import parse_and_boolean_solve
+    return parse_and_boolean_solve(problem, samples)
 
 
 def _lattice_sector_solve(
