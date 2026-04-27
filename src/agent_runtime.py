@@ -339,6 +339,15 @@ class LocalCodingAgent:
         if self.plugin_runtime is not None:
             self.plugin_runtime.restore_session_state({})
         session_id = uuid4().hex
+        # Write new session ID to ~/.latti/last_session so the latti shim
+        # and audit journal always see the current session UUID, not a stale one.
+        try:
+            import pathlib
+            _latti_home = pathlib.Path.home() / '.latti'
+            if _latti_home.is_dir():
+                (_latti_home / 'last_session').write_text(session_id, encoding='utf-8')
+        except Exception:
+            pass
         scratchpad_directory = self._ensure_scratchpad_directory(session_id)
         # Pre-response: inject any claim-matches into system prompt so echoes
         # of prior claims are recognized structurally, not re-reasoned.
