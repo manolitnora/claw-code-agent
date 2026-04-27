@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+import itertools
 import json
 import os
 from pathlib import Path
@@ -549,7 +550,11 @@ class LocalCodingAgent:
             self.last_run_result = result
             return result
 
-        for turn_index in range(1, self.runtime_config.max_turns + 1):
+        # 2026-04-27: Remove max_turns ceiling from main loop.
+        # The loop is bounded by explicit break/return conditions (budget,
+        # empty responses, tool errors, etc.), not by a hardcoded turn count.
+        # Removing the ceiling allows long autonomous work to proceed.
+        for turn_index in itertools.count(1):
             self._snip_session_if_needed(
                 session,
                 stream_events,
