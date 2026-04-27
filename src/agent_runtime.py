@@ -1417,6 +1417,10 @@ class LocalCodingAgent:
             return str(args.get('path', ''))
         if name == 'bash':
             cmd = str(args.get('command', ''))
+            # Strip leading `cd /path && ` or `cd /path;` preamble — it's
+            # boilerplate working-dir noise, not the meaningful command.
+            import re as _re
+            cmd = _re.sub(r'^(cd\s+\S+\s*(?:&&|;)\s*)+', '', cmd).strip()
             return cmd[:80] + '...' if len(cmd) > 80 else cmd
         if name in ('glob_search', 'grep_search'):
             return str(args.get('pattern', ''))
