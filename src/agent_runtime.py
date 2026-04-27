@@ -1046,12 +1046,26 @@ class LocalCodingAgent:
                 # TUI: show tool result
                 if tool_result.ok:
                     _content = tool_result.content or 'ok'
+                    # Sanitize tool output before display — strips layout-busting
+                    # escape sequences (scroll-region-reset, screen-clear, cursor
+                    # movement, RIS, alt-screen) that subprocess output can contain.
+                    try:
+                        from .tui_heal import sanitize as _tui_sanitize
+                        _content = _tui_sanitize(_content)
+                    except Exception:
+                        pass
                     # Show first line only, max 100 chars
                     _first_line = _content.split('\n')[0]
                     _summary = _first_line[:100] + '...' if len(_first_line) > 100 else _first_line
                     _tui.tool_result(tool_call.name, _summary)
                 else:
-                    _tui.tool_error(tool_call.name, tool_result.content or 'error')
+                    _err = tool_result.content or 'error'
+                    try:
+                        from .tui_heal import sanitize as _tui_sanitize
+                        _err = _tui_sanitize(_err)
+                    except Exception:
+                        pass
+                    _tui.tool_error(tool_call.name, _err)
                 if self.plugin_runtime is not None:
                     self.plugin_runtime.record_tool_result(
                         tool_call.name,

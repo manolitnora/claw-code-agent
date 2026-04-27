@@ -540,6 +540,8 @@ def _run_agent_chat_loop(
 
     if use_tui:
         tui.banner()
+        from . import tui_heal
+        tui_heal.install()  # Layer 1-4: SIGWINCH + sanitizer + watchdog
         if active_session_id:
             tui.info(f'resuming session {active_session_id[:12]}...')
         # Run boot actions visibly in the TUI (code, not model)
@@ -575,9 +577,12 @@ def _run_agent_chat_loop(
             first_prompt = None
         else:
             try:
+                if use_tui:
+                    tui_heal.cursor_guard()  # Layer 3: nudge cursor out of footer before raw mode
                 user_input = tui.prompt() if use_tui else input_func('user> ')
             except (EOFError, KeyboardInterrupt):
                 if use_tui:
+                    tui_heal.uninstall()
                     tui.cleanup()
                 else:
                     output_func('chat_ended=eof')
@@ -588,6 +593,7 @@ def _run_agent_chat_loop(
             continue
         if normalized in {'/exit', '/quit'}:
             if use_tui:
+                tui_heal.uninstall()
                 tui.cleanup()
                 tui.info('goodbye')
             else:

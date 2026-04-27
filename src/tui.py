@@ -480,9 +480,19 @@ def tool_start(name: str, detail: str = '') -> None:
     _w(f'\n{MAGENTA}  {icon} {label}{d}{RESET}\n')
 
 def tool_result(name: str, summary: str) -> None:
+    try:
+        from .tui_heal import sanitize as _sanitize
+        summary = _sanitize(summary)
+    except Exception:
+        pass
     _w(f'{GRAY}  ⎿ {summary}{RESET}\n')
 
 def tool_error(name: str, error: str) -> None:
+    try:
+        from .tui_heal import sanitize as _sanitize
+        error = _sanitize(error)
+    except Exception:
+        pass
     _w(f'{RED}  ⎿ {error[:120]}{RESET}\n')
 
 def _tool_icon(name: str) -> str:
