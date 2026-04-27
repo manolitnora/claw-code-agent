@@ -4108,6 +4108,7 @@ class LocalCodingAgent:
             
             # Import the audit integration
             sys.path.insert(0, str(latti_home))
+            sys.path.insert(0, str(latti_home / 'lib'))
             from agent_audit_integration import audit_agent_response  # type: ignore[import-not-found]
             
             # Run the audit
