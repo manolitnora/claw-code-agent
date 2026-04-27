@@ -1228,6 +1228,11 @@ class LocalCodingAgent:
         """Use the model router and scars to pick the best model.
 
         Returns a model override string, or None to use the default.
+
+        Scar routing takes priority when a successful past scar matches.
+        Lessons from all similar scars are injected into the system prompt
+        regardless of whether a model override fires, so the model always
+        has the benefit of past experience.
         """
         # Extract last user message for classification
         last_user_msg = ''
@@ -1235,19 +1240,27 @@ class LocalCodingAgent:
             if getattr(msg, 'role', None) == 'user':
                 last_user_msg = getattr(msg, 'content', '') or ''
                 break
-        
-        # First, check scars for similar problems
-        if self.scar_router is not None:
+
+        # Check scars — always inject lessons, optionally override model
+        if self.scar_router is not None and last_user_msg:
             scar_decision = self.scar_router.route_problem(last_user_msg)
-            if scar_decision.get('scar_matched'):
-                # Display the scar match to the user
+
+            # Inject lessons into the live session system prompt so the model
+            # sees past experience as part of its context, not just routing.
+            lessons = scar_decision.get('lessons_context', '')
+            if lessons:
+                self._inject_scar_lessons(session, lessons)
+
+            # Only override the model when we have a confident scar match
+            # (a successful past scar, not just any similar scar).
+            if scar_decision.get('scar_matched') and scar_decision.get('model'):
                 _tui.scar_match(
                     scar_id=scar_decision['scar_matched'],
                     lesson=scar_decision['lesson'],
                     model=scar_decision['model'],
                 )
                 return scar_decision['model']
-        
+
         # Fall back to model router
         if self.model_router is None or not self.model_router.config.enabled:
             return None
@@ -1255,6 +1268,30 @@ class LocalCodingAgent:
         if decision.tier.value != 'heavy':
             return decision.model
         return None
+
+    def _inject_scar_lessons(
+        self,
+        session: AgentSessionState,
+        lessons: str,
+    ) -> None:
+        """Append scar lessons to the last system prompt part in the session.
+
+        This is best-effort: if the session structure doesn't support it,
+        we silently skip rather than crashing the run.
+        """
+        try:
+            if not hasattr(session, 'system_prompt_parts'):
+                return
+            parts = list(session.system_prompt_parts)
+            if not parts:
+                return
+            # Append to the last part so it appears near the end of the
+            # system prompt, close to the dynamic boundary.
+            parts[-1] = parts[-1] + f'\n\n{lessons}'
+            # AgentSessionState is frozen; use replace() to update
+            object.__setattr__(session, 'system_prompt_parts', tuple(parts))
+        except Exception:
+            pass  # Best-effort; never disrupt the run
 
     def _query_model(
         self,
@@ -4506,13 +4543,35 @@ class LocalCodingAgent:
             if not problem_description:
                 return
             
-            # Determine outcome based on result
-            if result.stop_reason == 'end_turn':
+            # Determine outcome using a richer eval signal.
+            # "end_turn" alone is too naive — the model could end_turn after
+            # producing garbage. We score on multiple signals:
+            #   - Hard failures: budget_exceeded, backend_error, max_turns,
+            #     prompt_too_long, empty_responses → failure
+            #   - Produced output + used tools → success
+            #   - Produced output, no tools → partial (may have just chatted)
+            #   - No output → failure
+            stop = result.stop_reason or ''
+            final_output = getattr(result, 'final_output', '') or ''
+            tool_calls = int(getattr(result, 'tool_calls', 0) or 0)
+
+            hard_failures = {
+                'budget_exceeded', 'backend_error', 'max_turns',
+                'prompt_too_long', 'empty_responses', 'resume_load_error',
+            }
+            if stop in hard_failures:
+                outcome = 'failure'
+            elif not final_output.strip():
+                outcome = 'failure'
+            elif stop == 'end_turn' and tool_calls > 0:
                 outcome = 'success'
-            elif result.stop_reason == 'tool_use':
+            elif stop == 'end_turn' and len(final_output.strip()) > 100:
+                # Produced a substantive response even without tool calls
+                outcome = 'success'
+            elif stop == 'end_turn':
                 outcome = 'partial'
             else:
-                outcome = 'failure'
+                outcome = 'partial'
             
             # Record the scar
             self.scar_router.record_outcome(
