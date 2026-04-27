@@ -2188,20 +2188,33 @@ class LocalCodingAgent:
                 ok=False,
                 content='prompt must be a non-empty string or subtasks must contain at least one prompt',
             )
+        # Permissions: inherit from parent unless caller explicitly restricts.
+        # allow_write / allow_shell default to True (inherit) — caller can
+        # pass False to restrict, but we don't silently cripple children.
+        # allow_destructive inherits from parent; no hidden override.
+        _allow_write = arguments.get('allow_write')
+        _allow_shell = arguments.get('allow_shell')
         child_permissions = AgentPermissions(
             allow_file_write=(
                 self.runtime_config.permissions.allow_file_write
-                and bool(arguments.get('allow_write', False))
+                if _allow_write is None
+                else (self.runtime_config.permissions.allow_file_write and bool(_allow_write))
             ),
             allow_shell_commands=(
                 self.runtime_config.permissions.allow_shell_commands
-                and bool(arguments.get('allow_shell', False))
+                if _allow_shell is None
+                else (self.runtime_config.permissions.allow_shell_commands and bool(_allow_shell))
             ),
-            allow_destructive_shell_commands=False,
+            allow_destructive_shell_commands=(
+                self.runtime_config.permissions.allow_destructive_shell_commands
+            ),
         )
+        # max_turns: use caller-supplied value if given, otherwise inherit
+        # from parent without any hardcoded cap. A cap of 6 was silently
+        # killing long autonomous subtasks.
         child_runtime_config = replace(
             self.runtime_config,
-            max_turns=max_turns or min(self.runtime_config.max_turns, 6),
+            max_turns=max_turns if max_turns is not None else self.runtime_config.max_turns,
             permissions=child_permissions,
             auto_compact_threshold_tokens=self.runtime_config.auto_compact_threshold_tokens,
         )
