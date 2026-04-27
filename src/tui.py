@@ -1,8 +1,8 @@
-"""Terminal UI — Claude Code-style for Latti.
+"""Terminal UI — pi-style dark-green aesthetic for Latti.
 
-Layout matches Claude Code exactly:
-- Content scrolls in upper region
-- Footer pinned at bottom: divider │ prompt │ divider │ status
+Layout:
+- Content scrolls in upper region (scroll region)
+- Footer pinned at bottom: divider │ prompt │ divider │ status (2 lines)
 
 The ONLY cursor manipulation is in _draw_footer() and prompt().
 Content functions (streaming, tools, info) just write to stdout.
@@ -19,30 +19,42 @@ import termios
 import tty
 
 # ---------------------------------------------------------------------------
-# ANSI
+# ANSI — dark-green palette matching pi TUI
 # ---------------------------------------------------------------------------
 
-RESET = '\033[0m'
-BOLD = '\033[1m'
-DIM = '\033[2m'
-ITALIC = '\033[3m'
-UNDERLINE = '\033[4m'
+RESET      = '\033[0m'
+BOLD       = '\033[1m'
+DIM        = '\033[2m'
+ITALIC     = '\033[3m'
 
-BLUE = '\033[38;5;75m'
-GREEN = '\033[38;5;114m'
-YELLOW = '\033[38;5;220m'
-CYAN = '\033[38;5;117m'
-MAGENTA = '\033[38;5;176m'
-RED = '\033[38;5;203m'
-GRAY = '\033[38;5;245m'
-WHITE = '\033[38;5;255m'
-DARK_GRAY = '\033[38;5;240m'
+# Greens
+G_BRIGHT   = '\033[38;5;82m'   # bright green  — commands, highlights
+G_MID      = '\033[38;5;71m'   # mid green     — tool labels
+G_DIM      = '\033[38;5;28m'   # dark green     — subtle accents
 
-BG_DARK = '\033[48;5;236m'
-BG_CODE = '\033[48;5;235m'
+# Text
+WHITE      = '\033[38;5;255m'  # response body
+GRAY       = '\033[38;5;245m'  # secondary info
+DARK_GRAY  = '\033[38;5;240m'  # dividers, dims
+OFF_WHITE  = '\033[38;5;252m'  # user input echo
 
-# Footer: divider + prompt + divider + status = 4 lines
-_FOOTER_LINES = 4
+# Accents
+YELLOW     = '\033[38;5;220m'  # inline code
+CYAN       = '\033[38;5;117m'  # bold spans
+RED        = '\033[38;5;203m'  # errors
+ORANGE     = '\033[38;5;214m'  # warnings / thinking
+
+# Backgrounds
+BG_USER    = '\033[48;5;22m'   # dark green bg for user message band
+BG_TOOL    = '\033[48;5;235m'  # very dark bg for tool header
+
+# Keep legacy aliases so external callers don't break
+BLUE       = '\033[38;5;75m'
+GREEN      = G_BRIGHT
+MAGENTA    = '\033[38;5;176m'
+
+# Footer height: top-divider + prompt-row + bottom-divider + status1 + status2 = 5 lines
+_FOOTER_LINES = 5
 
 
 def _w(s: str) -> None:
@@ -69,17 +81,19 @@ def _rows() -> int:
 # ---------------------------------------------------------------------------
 
 _state = {
-    'model': os.environ.get('OPENAI_MODEL', 'unknown'),
-    'cwd': '~',
-    'context_pct': 0,
-    'permissions': 'full access',
+    'model':        os.environ.get('OPENAI_MODEL', 'unknown'),
+    'cwd':          '~',
+    'context_pct':  0,
+    'permissions':  'full access',
     'total_tokens': 0,
-    'turn_count': 0,
-    'cost_usd': 0.0,
+    'turn_count':   0,
+    'cost_usd':     0.0,
+    'branch':       '',
+    'session_id':   '',
 }
 
-_active = False
-_last_rows: int = 0  # track terminal height; re-establish scroll region on change
+_active    = False
+_last_rows: int = 0
 
 
 def _ensure_scroll_region() -> None:
@@ -87,26 +101,27 @@ def _ensure_scroll_region() -> None:
 
     Called at every footer draw and at prompt entry so that terminal resize
     or any escape sequence that resets the scroll region never corrupts the
-    layout.  Safe to call when the region is already correct — the terminal
-    ignores a no-op set.
+    layout.  Safe to call when the region is already correct.
     """
     global _last_rows, _active
     r = _rows()
     if r != _last_rows or not _active:
-        _w(f'\033[1;{r - _FOOTER_LINES}r')  # scroll region: rows 1..(r-4)
+        _w(f'\033[1;{r - _FOOTER_LINES}r')
         _last_rows = r
         _active = True
 
 
 def set_state(
     *,
-    model: str = '',
-    cwd: str = '',
-    context_pct: int = -1,
-    permissions: str = '',
-    total_tokens: int = -1,
-    turn_count: int = -1,
-    cost_usd: float = -1.0,
+    model:        str   = '',
+    cwd:          str   = '',
+    context_pct:  int   = -1,
+    permissions:  str   = '',
+    total_tokens: int   = -1,
+    turn_count:   int   = -1,
+    cost_usd:     float = -1.0,
+    branch:       str   = '',
+    session_id:   str   = '',
 ) -> None:
     if model:
         _state['model'] = model
@@ -123,64 +138,93 @@ def set_state(
         _state['turn_count'] = turn_count
     if cost_usd >= 0:
         _state['cost_usd'] = cost_usd
+    if branch:
+        _state['branch'] = branch
+    if session_id:
+        _state['session_id'] = session_id
 
 
 # ---------------------------------------------------------------------------
-# Footer rendering — draws 4 lines at bottom of terminal
+# Footer rendering — 5 lines pinned at bottom
+#
+#  row r-4: ── divider ────────────────────────────────────────────────────
+#  row r-3: ❯  {prompt text or cursor}
+#  row r-2: ── divider ────────────────────────────────────────────────────
+#  row r-1: status line 1  — project │ branch │ session │ turns
+#  row r:   status line 2  — model │ context bar │ cost │ tokens
 # ---------------------------------------------------------------------------
 
-def _build_status() -> str:
-    """Build the status line text."""
-    model = _state['model']
-    short = model.split('/')[-1] if '/' in model else model
-    cwd = _state['cwd']
-    pct = _state['context_pct']
-    filled = max(0, pct // 10)
-    bar = '█' * filled + '░' * (10 - filled)
-    tok = _state['total_tokens']
-    cost = _state['cost_usd']
-
+def _fmt_tokens(tok: int) -> str:
     if tok >= 1_000_000:
-        tok_s = f'{tok / 1_000_000:.1f}M'
-    elif tok >= 1_000:
-        tok_s = f'{tok / 1_000:.1f}K'
-    else:
-        tok_s = str(tok)
+        return f'{tok / 1_000_000:.1f}M'
+    if tok >= 1_000:
+        return f'{tok / 1_000:.1f}k'
+    return str(tok)
 
-    cost_s = f' │ ${cost:.4f}' if cost > 0.001 else ''
-    line = f'  {short} │ [{cwd}] {bar} {pct}%{cost_s} │ {tok_s} tokens │ turn {_state["turn_count"]}'
-    # Truncate to terminal width so the status line never wraps and corrupts
-    # the footer layout (wrapping pushes the prompt row into the scroll region,
-    # causing the "bouncing" / input corruption bug).
-    max_w = _cols()
-    if len(line) > max_w:
-        line = line[:max_w - 1] + '…'
+
+def _build_status1() -> str:
+    """Top status line: project path │ branch │ session │ turns."""
+    c = _cols()
+    cwd  = _state['cwd']
+    branch = _state['branch']
+    sess = _state['session_id'][:8] if _state['session_id'] else ''
+    turn = _state['turn_count']
+
+    parts = [f'  {G_BRIGHT}{cwd}{RESET}']
+    if branch:
+        parts.append(f'{DARK_GRAY}({G_MID}{branch}{DARK_GRAY}){RESET}')
+    if sess:
+        parts.append(f'{DARK_GRAY}sess:{GRAY}{sess}{RESET}')
+    parts.append(f'{DARK_GRAY}turn {GRAY}{turn}{RESET}')
+    line = f'  {DARK_GRAY}│{RESET} '.join(parts)
+    # strip ANSI for length check
+    import re as _re
+    plain = _re.sub(r'\033\[[^m]*m', '', line)
+    if len(plain) > c:
+        # fallback: just cwd + turn
+        line = f'  {G_BRIGHT}{cwd}{RESET}  {DARK_GRAY}turn {GRAY}{turn}{RESET}'
+    return line
+
+
+def _build_status2() -> str:
+    """Bottom status line: model │ context bar │ cost │ tokens."""
+    c      = _cols()
+    model  = _state['model']
+    short  = model.split('/')[-1] if '/' in model else model
+    pct    = _state['context_pct']
+    filled = max(0, pct // 10)
+    bar    = f'{G_BRIGHT}{"█" * filled}{DARK_GRAY}{"░" * (10 - filled)}{RESET}'
+    tok    = _fmt_tokens(_state['total_tokens'])
+    cost   = _state['cost_usd']
+    cost_s = f'${cost:.4f}' if cost > 0.001 else '$0.00'
+
+    line = f'  {G_MID}{short}{RESET}  {bar}  {GRAY}{pct}%{RESET}  {DARK_GRAY}│{RESET}  {GRAY}{cost_s}{RESET}  {DARK_GRAY}│{RESET}  {GRAY}{tok} tokens{RESET}'
+
+    import re as _re
+    plain = _re.sub(r'\033\[[^m]*m', '', line)
+    if len(plain) > c:
+        line = line[:c - 1]
     return line
 
 
 def _draw_footer(prompt_text: str = '') -> None:
-    """Draw the 4-line footer. Uses DEC save/restore.
-
-    Layout:
-      row r-3: ─────────── divider
-      row r-2: ❯  {prompt_text or waiting}
-      row r-1: ─────────── divider
-      row r:   status line
-    """
+    """Draw the 5-line footer using DEC save/restore."""
+    _ensure_scroll_region()
     r = _rows()
     c = _cols()
-    div = '─' * c
-    status = _build_status()
+    div   = f'{DARK_GRAY}{"─" * c}{RESET}'
+    stat1 = _build_status1()
+    stat2 = _build_status2()
 
-    _ensure_scroll_region()
     _w('\0337')  # DEC save cursor
-    _w(f'\033[{r-3};1H\033[2K{DARK_GRAY}{div}{RESET}')
+    _w(f'\033[{r-4};1H\033[2K{div}')
     if prompt_text:
-        _w(f'\033[{r-2};1H\033[2K{DARK_GRAY}  {prompt_text}{RESET}')
+        _w(f'\033[{r-3};1H\033[2K{DARK_GRAY}  {prompt_text}{RESET}')
     else:
-        _w(f'\033[{r-2};1H\033[2K{BLUE}{BOLD}❯  {WHITE}')
-    _w(f'\033[{r-1};1H\033[2K{DARK_GRAY}{div}{RESET}')
-    _w(f'\033[{r};1H\033[2K{DARK_GRAY}{status}{RESET}')
+        _w(f'\033[{r-3};1H\033[2K{G_BRIGHT}{BOLD}❯  {WHITE}')
+    _w(f'\033[{r-2};1H\033[2K{div}')
+    _w(f'\033[{r-1};1H\033[2K{stat1}')
+    _w(f'\033[{r};1H\033[2K{stat2}')
     _w('\0338')  # DEC restore cursor
 
 
@@ -189,16 +233,15 @@ def _draw_footer(prompt_text: str = '') -> None:
 # ---------------------------------------------------------------------------
 
 def banner() -> None:
-    """Clear screen, set scroll region, draw footer, print banner text."""
+    """Clear screen, set scroll region, draw footer, print banner."""
     global _active, _last_rows
     r = _rows()
-    _w('\033[2J\033[H')  # clear + cursor home
-    _w(f'\033[1;{r - _FOOTER_LINES}r')  # scroll region: content area
-    _active = True
+    _w('\033[2J\033[H')
+    _w(f'\033[1;{r - _FOOTER_LINES}r')
+    _active    = True
     _last_rows = r
     _draw_footer()
-    # Banner text goes into the content area (cursor is at home)
-    _w(f'\n{BLUE}{BOLD}  ◆ Latti Nora{RESET}{GRAY}  — lattice mind{RESET}\n')
+    _w(f'\n{G_BRIGHT}{BOLD}  ◆ Latti{RESET}{GRAY}  — lattice mind  {DIM}(claude-code style){RESET}\n')
     _w(f'{DARK_GRAY}  {"─" * 40}{RESET}\n\n')
 
 
@@ -207,16 +250,16 @@ def cleanup() -> None:
     global _active, _last_rows
     if _active:
         r = _rows()
-        _w(f'\033[{r - 3};1H\033[J')  # clear footer area
-        _w(f'\033[1;{r}r')             # reset scroll region to full terminal
-        _w(f'\033[{r};1H\n')           # cursor to bottom
-        _active = False
+        _w(f'\033[{r - 4};1H\033[J')
+        _w(f'\033[1;{r}r')
+        _w(f'\033[{r};1H\n')
+        _active    = False
         _last_rows = 0
 
 
 def status_footer() -> None:
     """Redraw footer with current state. Called after each turn."""
-    _ensure_scroll_region()  # re-establishes region if rows changed
+    _ensure_scroll_region()
     _draw_footer()
 
 
@@ -224,29 +267,15 @@ def status_footer() -> None:
 # Prompt — cursor moves to footer, then back to content area
 # ---------------------------------------------------------------------------
 
-# Paste detection: if a second line arrives within this many seconds of the
-# first, we're in paste mode and keep collecting until a deliberate Enter on
-# a blank line (or Ctrl+D).
-_PASTE_TIMEOUT = 0.08  # 80 ms — fast enough for paste, slow for human typing
+_PASTE_TIMEOUT = 0.08
 
 
 def _read_multiline() -> str:
-    """Read one user message, handling multi-line paste correctly.
-
-    UX contract:
-    - Single line + Enter  → submit immediately (normal case, unchanged)
-    - Paste (lines arrive <80ms apart) → collect all lines; show "[N lines]"
-      indicator; submit when user presses Enter on a blank line or Ctrl+D
-    - Ctrl+D on empty buffer → raise EOFError
-    - Ctrl+C → raise KeyboardInterrupt
-
-    Uses raw terminal mode so we can peek at stdin with select() without
-    blocking. Restores cooked mode before returning.
-    """
-    fd = sys.stdin.fileno()
+    """Read one user message, handling multi-line paste correctly."""
+    fd           = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     lines: list[str] = []
-    current: list[str] = []  # chars on the current line
+    current: list[str] = []
 
     def _flush_line() -> str:
         line = ''.join(current)
@@ -254,77 +283,62 @@ def _read_multiline() -> str:
         return line
 
     def _update_prompt_indicator(n_lines: int) -> None:
-        """Redraw the prompt row to show multiline indicator."""
         r = _rows()
         if n_lines > 0:
-            indicator = f'{BLUE}{BOLD}❯  {RESET}{CYAN}[{n_lines} line{"s" if n_lines != 1 else ""} — blank line or Ctrl+D to send]{WHITE}'
+            indicator = (
+                f'{G_BRIGHT}{BOLD}❯  {RESET}{CYAN}'
+                f'[{n_lines} line{"s" if n_lines != 1 else ""}'
+                f' — blank line or Ctrl+D to send]{WHITE}'
+            )
         else:
-            indicator = f'{BLUE}{BOLD}❯  {WHITE}'
-        _w(f'\033[{r-2};1H\033[2K{indicator}')
+            indicator = f'{G_BRIGHT}{BOLD}❯  {WHITE}'
+        _w(f'\033[{r-3};1H\033[2K{indicator}')
 
     try:
         tty.setraw(fd)
 
         while True:
-            # Wait for input; use a short timeout when we already have lines
-            # (so we can detect end-of-paste)
             timeout = _PASTE_TIMEOUT if lines else None
             ready, _, _ = select.select([sys.stdin], [], [], timeout)
 
             if not ready:
-                # Timeout expired with no new data — paste is done.
-                # If we have collected lines, wait for explicit submit.
-                # (We stay in the loop; next keypress will decide.)
                 continue
 
             ch = sys.stdin.read(1)
 
-            # Ctrl+C
             if ch == '\x03':
                 raise KeyboardInterrupt
-
-            # Ctrl+D
             if ch == '\x04':
                 if not current and not lines:
                     raise EOFError
-                # Treat as submit
                 if current:
                     lines.append(_flush_line())
                 break
 
-            # Enter / Return
             if ch in ('\r', '\n'):
                 line = _flush_line()
-
                 if lines:
-                    # We're in multiline mode.
                     if line == '':
-                        # Blank line = submit
                         break
                     else:
                         lines.append(line)
                         _update_prompt_indicator(len(lines))
                 else:
-                    # First line — check if more data arrives quickly (paste)
                     ready2, _, _ = select.select([sys.stdin], [], [], _PASTE_TIMEOUT)
                     if ready2:
-                        # More data incoming → paste mode
                         lines.append(line)
                         _update_prompt_indicator(len(lines))
                     else:
-                        # Nothing more → single-line submit
                         lines.append(line)
                         break
                 continue
 
-            # Backspace (raw mode sends \x7f or \x08)
             if ch in ('\x7f', '\x08'):
                 if current:
                     current.pop()
-                    _w('\b \b')  # erase last char on screen
+                    _w('\b \b')
                 continue
 
-            # Printable character — echo it
             current.append(ch)
             _w(ch)
 
@@ -336,31 +350,45 @@ def _read_multiline() -> str:
 
 def prompt() -> str:
     """Draw prompt in footer, get input, return cursor to content area."""
-    _ensure_scroll_region()  # guard against resize between turns
-    r = _rows()
+    _ensure_scroll_region()
+    r            = _rows()
     content_bottom = r - _FOOTER_LINES
 
-    # Draw the prompt line in the footer
-    _w(f'\033[{r-2};1H\033[2K{BLUE}{BOLD}❯  {WHITE}')
+    _w(f'\033[{r-3};1H\033[2K{G_BRIGHT}{BOLD}❯  {WHITE}')
 
     try:
         user_input = _read_multiline()
     except (EOFError, KeyboardInterrupt):
-        # Restore cursor to content area before raising
         _w(f'\033[{content_bottom};1H')
         _w(f'\n{GRAY}  goodbye{RESET}\n')
         raise
 
-    # Show what was typed (dim summary — truncate long pastes)
     summary = user_input.replace('\n', ' ↵ ')
     if len(summary) > 80:
         summary = summary[:77] + '…'
     _draw_footer(prompt_text=f'{DARK_GRAY}{summary}{RESET}')
-
-    # Return cursor to bottom of content area so response appears there
     _w(f'\033[{content_bottom};1H')
-
     return user_input
+
+
+# ---------------------------------------------------------------------------
+# User message echo — pi-style highlighted band
+# ---------------------------------------------------------------------------
+
+def user_message(text: str) -> None:
+    """Display the user's message as a highlighted dark-green band."""
+    c     = _cols()
+    lines = text.split('\n') if '\n' in text else [text]
+    pad   = ' ' * c
+    _w(f'\n{BG_USER}')
+    for line in lines:
+        display = f'  {line}'
+        # pad to full width for solid band
+        import re as _re
+        plain = _re.sub(r'\033\[[^m]*m', '', display)
+        spaces = max(0, c - len(plain))
+        _w(f'{OFF_WHITE}{display}{" " * spaces}{RESET}\n')
+    _w(RESET)
 
 
 # ---------------------------------------------------------------------------
@@ -369,11 +397,11 @@ def prompt() -> str:
 
 class StreamRenderer:
     def __init__(self) -> None:
-        self._in_bold = False
+        self._in_bold        = False
         self._in_code_inline = False
-        self._in_code_block = False
-        self._line_start = True
-        self._pending = ''
+        self._in_code_block  = False
+        self._line_start     = True
+        self._pending        = ''
 
     def start(self) -> None:
         _w(f'\n{WHITE}')
@@ -394,7 +422,7 @@ class StreamRenderer:
                 if not self._in_code_block:
                     lang = text[i+3:nl].strip()
                     self._in_code_block = True
-                    _w(f'\n')
+                    _w('\n')
                     if lang:
                         _w(f'{DARK_GRAY}  {DIM}{CYAN}{lang}{RESET}\n')
                 else:
@@ -407,9 +435,9 @@ class StreamRenderer:
             if self._in_code_block:
                 nl = text.find('\n', i)
                 if nl == -1:
-                    _w(f'{GREEN}{text[i:]}{RESET}')
+                    _w(f'{G_BRIGHT}{text[i:]}{RESET}')
                     return
-                _w(f'{GREEN}    {text[i:nl]}{RESET}\n')
+                _w(f'{G_BRIGHT}    {text[i:nl]}{RESET}\n')
                 i = nl + 1
                 self._line_start = True
                 continue
@@ -440,7 +468,7 @@ class StreamRenderer:
                     self._pending = text[i:]
                     return
                 line = text[i:nl].lstrip('#').strip()
-                _w(f'{BOLD}{BLUE}{line}{RESET}\n{WHITE}')
+                _w(f'{BOLD}{G_BRIGHT}{line}{RESET}\n{WHITE}')
                 i = nl + 1
                 self._line_start = True
                 continue
@@ -470,22 +498,55 @@ class StreamRenderer:
 
 
 # ---------------------------------------------------------------------------
-# Tool calls — write to content area, no cursor manipulation
+# Tool calls — pi-style: $ command header + truncated output + separator
 # ---------------------------------------------------------------------------
 
+# Track lines seen per tool call for the expand hint
+_tool_line_counts: dict[str, int] = {}
+
+
 def tool_start(name: str, detail: str = '') -> None:
-    icon = _tool_icon(name)
+    """pi-style tool header: dark band with $ command."""
+    c     = _cols()
+    icon  = _tool_icon(name)
     label = _tool_label(name)
-    d = f' {CYAN}{detail}{RESET}' if detail else ''
-    _w(f'\n{MAGENTA}  {icon} {label}{d}{RESET}\n')
+    cmd   = detail if detail else label
+
+    # Header band: dark bg, green $ prefix, command in bright white
+    header = f'  {icon} {G_BRIGHT}{label}{RESET}  {DARK_GRAY}{cmd}{RESET}'
+    import re as _re
+    plain  = _re.sub(r'\033\[[^m]*m', '', header)
+    spaces = max(0, c - len(plain))
+    _w(f'\n{BG_TOOL}{header}{" " * spaces}{RESET}\n')
+
 
 def tool_result(name: str, summary: str) -> None:
+    """Output line + pi-style separator with inline metadata."""
     try:
         from .tui_heal import sanitize as _sanitize
         summary = _sanitize(summary)
     except Exception:
         pass
-    _w(f'{GRAY}  ⎿ {summary}{RESET}\n')
+
+    # Count lines for expand hint
+    n_lines = summary.count('\n') + 1
+    _tool_line_counts[name] = n_lines
+
+    # Show first line of output
+    first = summary.split('\n')[0]
+    if len(first) > 120:
+        first = first[:117] + '…'
+
+    _w(f'{DARK_GRAY}  ⎿ {GRAY}{first}{RESET}\n')
+
+    # Truncation hint if multi-line (pi-style)
+    if n_lines > 1:
+        _w(f'{DARK_GRAY}  … ({n_lines - 1} more line{"s" if n_lines > 2 else ""}, not shown){RESET}\n')
+
+    # Separator after tool output (thin, full-width)
+    c   = _cols()
+    _w(f'{DARK_GRAY}{"─" * c}{RESET}\n')
+
 
 def tool_error(name: str, error: str) -> None:
     try:
@@ -493,40 +554,63 @@ def tool_error(name: str, error: str) -> None:
         error = _sanitize(error)
     except Exception:
         pass
+    c = _cols()
     _w(f'{RED}  ⎿ {error[:120]}{RESET}\n')
+    _w(f'{DARK_GRAY}{"─" * c}{RESET}\n')
+
 
 def _tool_icon(name: str) -> str:
     return {
-        'read_file': '📄', 'write_file': '✏️', 'edit_file': '✏️',
-        'bash': '⚡', 'glob_search': '🔍', 'grep_search': '🔍',
-        'list_dir': '📁', 'lattice_solve': '◆', 'web_fetch': '🌐',
-        'web_search': '🌐', 'delegate_agent': '🤖',
+        'read_file':      '📄',
+        'write_file':     '✏️',
+        'edit_file':      '✏️',
+        'bash':           '⚡',
+        'glob_search':    '🔍',
+        'grep_search':    '🔍',
+        'list_dir':       '📁',
+        'lattice_solve':  '◆',
+        'lattice_boolean_solve': '◆',
+        'web_fetch':      '🌐',
+        'web_search':     '🌐',
+        'delegate_agent': '🤖',
+        'self_score':     '📊',
     }.get(name, '⏺')
+
 
 def _tool_label(name: str) -> str:
     return {
-        'read_file': 'Read', 'write_file': 'Write', 'edit_file': 'Edit',
-        'bash': 'Bash', 'glob_search': 'Glob', 'grep_search': 'Grep',
-        'list_dir': 'List', 'lattice_solve': 'Lattice', 'web_fetch': 'Fetch',
-        'web_search': 'Search', 'delegate_agent': 'Agent',
+        'read_file':      'Read',
+        'write_file':     'Write',
+        'edit_file':      'Edit',
+        'bash':           'Bash',
+        'glob_search':    'Glob',
+        'grep_search':    'Grep',
+        'list_dir':       'List',
+        'lattice_solve':  'Lattice',
+        'lattice_boolean_solve': 'Lattice Bool',
+        'web_fetch':      'Fetch',
+        'web_search':     'Search',
+        'delegate_agent': 'Agent',
+        'self_score':     'Score',
     }.get(name, name)
 
 
 # ---------------------------------------------------------------------------
-# Info / markers — write to content area, no cursor manipulation
+# Info / markers
 # ---------------------------------------------------------------------------
 
 def info(text: str) -> None:
-    _w(f'{GRAY}  {text}{RESET}\n')
+    _w(f'{DARK_GRAY}  {GRAY}{text}{RESET}\n')
 
 def divider() -> None:
-    _w(f'{DARK_GRAY}  {"─" * 40}{RESET}\n')
+    c = _cols()
+    _w(f'{DARK_GRAY}{"─" * c}{RESET}\n')
 
 def done_marker() -> None:
-    _w(f'\n{GREEN}{BOLD}  ◆ done{RESET}\n\n')
+    _w(f'\n{G_BRIGHT}{BOLD}  ◆ done{RESET}\n\n')
 
 def thinking_start() -> None:
-    _w(f'\n{MAGENTA}  ◇ thinking…{RESET}')
+    _w(f'\n{ORANGE}  ⏳ Working…{RESET}')
     sys.stdout.flush()
 
 def thinking_clear() -> None:
@@ -534,24 +618,21 @@ def thinking_clear() -> None:
     sys.stdout.flush()
 
 def thinking_block(thinking_text: str, token_count: int = 0) -> None:
-    """Display extended thinking from o1/o3 models."""
     if not thinking_text:
         return
-    _w(f'\n{MAGENTA}[THINKING]{RESET}')
+    _w(f'\n{ORANGE}[thinking]{RESET}')
     if token_count > 0:
         _w(f' {CYAN}({token_count} tokens){RESET}')
     _w('\n')
-    # Truncate very long thinking to first 500 chars for display
     display_text = thinking_text[:500]
     if len(thinking_text) > 500:
-        display_text += f'\n{CYAN}... ({len(thinking_text) - 500} more chars){RESET}'
+        display_text += f'\n{CYAN}… ({len(thinking_text) - 500} more chars){RESET}'
     _w(display_text)
     _w('\n')
     sys.stdout.flush()
 
 def scar_match(scar_id: str, lesson: str, model: str) -> None:
-    """Display when a scar matches and influences routing."""
-    _w(f'\n{GREEN}[SCAR MATCH]{RESET} {scar_id}\n')
-    _w(f'{CYAN}Lesson:{RESET} {lesson}\n')
-    _w(f'{CYAN}Using model:{RESET} {model}\n')
+    _w(f'\n{G_MID}[scar]{RESET} {GRAY}{scar_id}{RESET}\n')
+    _w(f'{DARK_GRAY}  lesson:{RESET} {GRAY}{lesson}{RESET}\n')
+    _w(f'{DARK_GRAY}  model: {RESET} {G_BRIGHT}{model}{RESET}\n')
     sys.stdout.flush()

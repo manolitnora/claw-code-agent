@@ -521,9 +521,21 @@ def _run_agent_chat_loop(
         )
 
     # Initialize TUI state
+    _git_branch = ''
+    try:
+        import subprocess as _sp
+        _git_branch = _sp.check_output(
+            ['git', 'branch', '--show-current'],
+            cwd=str(agent.runtime_config.cwd),
+            stderr=_sp.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        pass
     tui.set_state(
         model=agent.model_config.model,
         cwd=str(agent.runtime_config.cwd),
+        branch=_git_branch,
         context_pct=0,
         permissions='full access' if agent.runtime_config.permissions.allow_destructive_shell_commands
             else 'write + shell' if agent.runtime_config.permissions.allow_shell_commands
@@ -591,6 +603,9 @@ def _run_agent_chat_loop(
         normalized = user_input.strip()
         if not normalized:
             continue
+        # Echo user message as pi-style highlighted band
+        if use_tui:
+            tui.user_message(normalized)
         if normalized in {'/exit', '/quit'}:
             if use_tui:
                 tui_heal.uninstall()

@@ -42,7 +42,7 @@ from typing import Optional
 # Constants — keep in sync with tui._FOOTER_LINES
 # ---------------------------------------------------------------------------
 
-_FOOTER_LINES = 4
+_FOOTER_LINES = 5
 _WATCHDOG_INTERVAL = 2.0  # seconds between blind footer redraws
 
 
