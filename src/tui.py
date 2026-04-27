@@ -521,3 +521,10 @@ def thinking_block(thinking_text: str, token_count: int = 0) -> None:
     _w(display_text)
     _w('\n')
     sys.stdout.flush()
+
+def scar_match(scar_id: str, lesson: str, model: str) -> None:
+    """Display when a scar matches and influences routing."""
+    _w(f'\n{GREEN}[SCAR MATCH]{RESET} {scar_id}\n')
+    _w(f'{CYAN}Lesson:{RESET} {lesson}\n')
+    _w(f'{CYAN}Using model:{RESET} {model}\n')
+    sys.stdout.flush()

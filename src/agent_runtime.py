@@ -20,6 +20,7 @@ from .config_runtime import ConfigRuntime
 from .hook_policy import HookPolicyRuntime
 from .lsp_runtime import LSPRuntime
 from .mcp_runtime import MCPRuntime
+from .scar_router import ScarRouter
 from .agent_prompting import (
     build_prompt_context,
     build_system_prompt_parts,
@@ -122,12 +123,15 @@ class LocalCodingAgent:
     managed_agent_id: str | None = field(default=None, init=False, repr=False)
     resume_source_session_id: str | None = field(default=None, init=False, repr=False)
     model_router: ModelRouter | None = field(default=None, init=False, repr=False)
+    scar_router: ScarRouter | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.tool_registry is None:
             self.tool_registry = default_tool_registry()
         if self.agent_manager is None:
             self.agent_manager = AgentManager()
+        if self.scar_router is None:
+            self.scar_router = ScarRouter()
         if self.plugin_runtime is None:
             self.plugin_runtime = PluginRuntime.from_workspace(
                 self.runtime_config.cwd,
@@ -1221,18 +1225,32 @@ class LocalCodingAgent:
         return result
 
     def _route_model(self, session: AgentSessionState) -> str | None:
-        """Use the model router to pick a cheaper model when possible.
+        """Use the model router and scars to pick the best model.
 
         Returns a model override string, or None to use the default.
         """
-        if self.model_router is None or not self.model_router.config.enabled:
-            return None
         # Extract last user message for classification
         last_user_msg = ''
         for msg in reversed(session.messages):
             if getattr(msg, 'role', None) == 'user':
                 last_user_msg = getattr(msg, 'content', '') or ''
                 break
+        
+        # First, check scars for similar problems
+        if self.scar_router is not None:
+            scar_decision = self.scar_router.route_problem(last_user_msg)
+            if scar_decision.get('scar_matched'):
+                # Display the scar match to the user
+                _tui.scar_match(
+                    scar_id=scar_decision['scar_matched'],
+                    lesson=scar_decision['lesson'],
+                    model=scar_decision['model'],
+                )
+                return scar_decision['model']
+        
+        # Fall back to model router
+        if self.model_router is None or not self.model_router.config.enabled:
+            return None
         decision = self.model_router.classify_turn(last_user_msg)
         if decision.tier.value != 'heavy':
             return decision.model
@@ -4005,6 +4023,7 @@ class LocalCodingAgent:
         self._emit_cost_ledger(result)
         self._emit_session_turn(result)
         self._emit_claims(result)
+        self._record_scar(result)
 
     def _emit_claims(self, result: AgentRunResult) -> None:
         """Extract substantive claims from final_output and register them so
@@ -4466,6 +4485,47 @@ class LocalCodingAgent:
                 }
             )
         return replace(updated, events=tuple(appended))
+    
+    def _record_scar(self, result: AgentRunResult) -> None:
+        """Record the outcome of this session as a scar for future learning.
+        
+        A scar captures: what problem was solved, which model was used,
+        what the outcome was, and what lesson to apply next time.
+        """
+        if self.scar_router is None or not self.last_session:
+            return
+        
+        try:
+            # Extract the problem description from the first user message
+            problem_description = ''
+            for msg in self.last_session.messages:
+                if getattr(msg, 'role', None) == 'user':
+                    problem_description = getattr(msg, 'content', '') or ''
+                    break
+            
+            if not problem_description:
+                return
+            
+            # Determine outcome based on result
+            if result.stop_reason == 'end_turn':
+                outcome = 'success'
+            elif result.stop_reason == 'tool_use':
+                outcome = 'partial'
+            else:
+                outcome = 'failure'
+            
+            # Record the scar
+            self.scar_router.record_outcome(
+                problem_description=problem_description[:200],  # Truncate for storage
+                model_used=self.model_config.model,
+                cost=result.total_cost_usd,
+                outcome=outcome,
+                session_id=self.active_session_id or 'unknown',
+                reasoning_tokens=result.usage.reasoning_tokens or 0,
+            )
+        except Exception:
+            # Best-effort; don't disrupt the session if scar recording fails
+            pass
 
 
 def _optional_policy_int(value: object) -> int | None:
