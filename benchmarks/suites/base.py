@@ -141,12 +141,20 @@ class BenchmarkSuite(ABC):
     def run_agent(self, instruction: str, workspace: str) -> tuple[int, str, float]:
         import shlex
 
+        # Pick up model endpoint from environment (set by latti shim or caller)
+        model    = os.environ.get('OPENAI_MODEL', 'anthropic/claude-sonnet-4.6')
+        base_url = os.environ.get('OPENAI_BASE_URL', 'https://openrouter.ai/api/v1')
+        api_key  = os.environ.get('OPENAI_API_KEY', '')
+
         agent_cmd = (
             f"{sys.executable} -m src.main agent "
             f"{shlex.quote(instruction)} "
             f"--cwd {shlex.quote(workspace)} "
             f"--allow-write "
-            f"--allow-shell"
+            f"--allow-shell "
+            f"--model {shlex.quote(model)} "
+            f"--base-url {shlex.quote(base_url)} "
+            + (f"--api-key {shlex.quote(api_key)} " if api_key else "")
         )
         if self.verbose:
             print(f"  agent cmd: {agent_cmd[:160]}...")
