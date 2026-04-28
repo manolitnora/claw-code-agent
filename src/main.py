@@ -769,6 +769,23 @@ def _run_agent_chat_loop(
             cost_usd=result.total_cost_usd,
         )
         tui.status_footer()  # redraw sticky footer with new data
+        # After rendering + persisting the turn, check memory again BEFORE
+        # optional post-turn hooks (auto-speak, self-sculpt). On macOS under
+        # compressor/wired pressure those hooks can push Python over jetsam;
+        # the user then sees a good response followed by SIGKILL. Bail cleanly
+        # now instead — the session is already saved and resume can continue.
+        if use_tui and _macos_safe_memory_mb() < int(os.environ.get('LATTI_MIN_SAFE_MB', '1000')):
+            tui.info(
+                f'low memory after turn — session saved ({active_session_id[:12]}), '
+                'skipping voice/self-sculpt and exiting cleanly'
+            )
+            tui.done_marker()
+            try:
+                tui_heal.uninstall()
+                tui.cleanup()
+            except Exception:
+                pass
+            return 75
         # Detect if the LLM called speak.sh this turn (via bash tool)
         _detect_llm_spoke(result)
         # Voice — speak first 2 sentences of response (skips if LLM already spoke)
@@ -842,6 +859,38 @@ def _detect_llm_spoke(result) -> None:
         if isinstance(content, str) and 'speak.sh' in content:
             _llm_spoke_this_turn = True
             return
+
+
+def _macos_safe_memory_mb() -> int:
+    """Return conservative macOS safe-free memory in MB.
+
+    Mirrors the shell launcher guard: free + speculative + purgeable pages.
+    Do NOT count inactive pages; under heavy compressor/wired pressure they
+    did not prevent jetsam from SIGKILLing the Python/TUI process.
+    Non-macOS or parse failure returns a large sentinel so hooks proceed.
+    """
+    if sys.platform != 'darwin':
+        return 10**9
+    try:
+        import re
+        out = subprocess.check_output(['vm_stat'], text=True, timeout=2)
+        page_match = re.search(r'page size of (\d+) bytes', out)
+        if not page_match:
+            return 10**9
+        page_size = int(page_match.group(1))
+        vals: dict[str, int] = {}
+        for line in out.splitlines():
+            m = re.match(r'([^:]+):\s+([0-9]+)\.', line)
+            if m:
+                vals[m.group(1)] = int(m.group(2))
+        safe_pages = (
+            vals.get('Pages free', 0)
+            + vals.get('Pages speculative', 0)
+            + vals.get('Pages purgeable', 0)
+        )
+        return safe_pages * page_size // 1024 // 1024
+    except Exception:
+        return 10**9
 
 
 _last_speak_proc: subprocess.Popen | None = None
