@@ -1,20 +1,30 @@
 """TUI healing engine — self-repairing terminal layout for Latti.
 
-Five-layer defense against layout corruption:
+Four-layer defense against layout corruption:
 
-  Layer 1 — SIGWINCH handler    instant scroll-region reset on terminal resize
-  Layer 2 — Output sanitizer    strip layout-busting escape sequences from tool
-                                 output BEFORE it reaches the terminal
-  Layer 3 — Cursor guard        after any content write batch, if cursor drifted
-                                 into footer rows, pull it back silently
-  Layer 4 — Watchdog thread     blind-redraw footer every 2 s — catches anything
-                                 that slipped through layers 1-3
+  Layer 1 — SIGWINCH flag       set on terminal resize; main loop calls
+                                 heal() on next turn. Handler does NOT
+                                 write to stdout — avoids racing with
+                                 in-flight content writes.
+  Layer 2 — Output sanitizer    strip layout-busting escape sequences from
+                                 tool output BEFORE it reaches the terminal
+  Layer 3 — Cursor guard        at prompt entry, if cursor drifted into
+                                 footer rows, pull it back silently
   Layer 5 — heal()              full recovery callable from anywhere:
                                  scroll region + clear footer + redraw + cursor
+
+(The old Layer 4 watchdog thread was removed 2026-04-28 — it raced with
+content writes and caused the "flash and vanish" corruption it was meant to
+heal.)
 
 Wire-up (in main.py, after tui.banner()):
     from . import tui_heal
     tui_heal.install()
+
+Every turn, before prompt():
+    if tui_heal.sigwinch_pending():
+        tui_heal.heal()
+    tui_heal.cursor_guard()
 
 Teardown (before tui.cleanup()):
     tui_heal.uninstall()
@@ -33,8 +43,6 @@ import re
 import signal
 import sys
 import shutil
-import threading
-import time
 from typing import Optional
 
 
@@ -43,7 +51,6 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 _FOOTER_LINES = 5
-_WATCHDOG_INTERVAL = 2.0  # seconds between blind footer redraws
 
 
 # ---------------------------------------------------------------------------
@@ -51,9 +58,8 @@ _WATCHDOG_INTERVAL = 2.0  # seconds between blind footer redraws
 # ---------------------------------------------------------------------------
 
 _installed = False
-_watchdog_thread: Optional[threading.Thread] = None
-_watchdog_stop = threading.Event()
 _prev_sigwinch: object = None  # previous SIGWINCH handler
+_sigwinch_pending = False       # set by handler, serviced from main thread
 
 
 # ---------------------------------------------------------------------------
@@ -61,15 +67,38 @@ _prev_sigwinch: object = None  # previous SIGWINCH handler
 # ---------------------------------------------------------------------------
 
 def _on_sigwinch(signum: int, frame: object) -> None:  # noqa: ARG001
-    """Terminal was resized.  Re-establish scroll region immediately."""
-    # Import lazily to avoid circular import at module load time.
+    """Terminal was resized.
+
+    Signal handlers run in the main thread but can interrupt ANY Python
+    bytecode — including the middle of a _w() write or a StreamRenderer
+    token. Writing ANSI sequences from here would race with in-flight writes
+    and corrupt cursor state.
+
+    Instead we just flip a flag and force _ensure_scroll_region to re-pin
+    the region next time it's called. The next _draw_footer() (from the
+    main render loop) will redraw to the new terminal size.
+    """
+    global _sigwinch_pending
+    _sigwinch_pending = True
     try:
         from . import tui as _tui
-        _tui._last_rows = 0          # force _ensure_scroll_region to re-set
-        _tui._ensure_scroll_region()
-        _tui._draw_footer()
+        # Flipping _last_rows=0 is a single integer assignment — atomic,
+        # safe from a handler. It just hints the next _ensure_scroll_region
+        # call to re-issue DECSTBM for the new dimensions.
+        _tui._last_rows = 0
     except Exception:
         pass  # never crash the signal handler
+
+
+def sigwinch_pending() -> bool:
+    """Main loop checkpoint: True if a resize happened since last check.
+
+    Callers should redraw the footer when this returns True.
+    """
+    global _sigwinch_pending
+    pending = _sigwinch_pending
+    _sigwinch_pending = False
+    return pending
 
 
 # ---------------------------------------------------------------------------
@@ -212,19 +241,15 @@ def cursor_guard() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Layer 4 — Watchdog thread
+# Layer 4 — Watchdog (removed 2026-04-28)
+#
+# Previous implementation ran a daemon thread that blindly redrew the footer
+# every 2 s. It caused: (1) a race with main-thread content writes, (2)
+# DECSTBM mid-stream teleporting cursor to row 1, (3) the "flash and vanish"
+# corruption pattern that motivated the whole healing engine. SIGWINCH (Layer
+# 1, deferred via flag) and explicit heal() (Layer 5) cover every case the
+# watchdog was meant to catch.
 # ---------------------------------------------------------------------------
-
-def _watchdog_loop() -> None:
-    """Watchdog disabled — was causing threading race with main content writes.
-
-    DECSTBM (scroll region set) moves cursor to row 1 per VT100 spec.
-    _draw_footer() lands cursor at content_bottom.
-    Either of these firing from a background thread mid-stream corrupts output.
-
-    Resize is handled by SIGWINCH (Layer 1).  The watchdog loop exits immediately.
-    """
-    return
 
 
 # ---------------------------------------------------------------------------
@@ -272,42 +297,27 @@ def heal() -> None:
 
 def install() -> None:
     """Install all healing layers.  Call once after tui.banner()."""
-    global _installed, _watchdog_thread, _watchdog_stop, _prev_sigwinch
+    global _installed, _prev_sigwinch
 
     if _installed:
         return
 
-    # Layer 1: SIGWINCH
+    # Layer 1: SIGWINCH — just sets a flag; main loop services it.
     try:
         _prev_sigwinch = signal.signal(signal.SIGWINCH, _on_sigwinch)
     except (OSError, ValueError):
         # Not available on all platforms / not a TTY
         _prev_sigwinch = None
 
-    # Layer 4: watchdog thread
-    _watchdog_stop.clear()
-    _watchdog_thread = threading.Thread(
-        target=_watchdog_loop,
-        name='tui-heal-watchdog',
-        daemon=True,
-    )
-    _watchdog_thread.start()
-
     _installed = True
 
 
 def uninstall() -> None:
     """Remove all healing layers.  Call before tui.cleanup()."""
-    global _installed, _watchdog_thread, _prev_sigwinch
+    global _installed, _prev_sigwinch
 
     if not _installed:
         return
-
-    # Stop watchdog
-    _watchdog_stop.set()
-    if _watchdog_thread is not None:
-        _watchdog_thread.join(timeout=3.0)
-        _watchdog_thread = None
 
     # Restore SIGWINCH
     try:

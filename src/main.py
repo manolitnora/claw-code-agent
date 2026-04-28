@@ -558,7 +558,7 @@ def _run_agent_chat_loop(
     if use_tui:
         tui.banner()
         from . import tui_heal
-        tui_heal.install()  # Layer 1-4: SIGWINCH + sanitizer + watchdog
+        tui_heal.install()  # SIGWINCH flag + sanitizer + cursor_guard + heal()
         if active_session_id:
             tui.info(f'resuming session {active_session_id[:12]}...')
         # Run boot actions visibly in the TUI (code, not model)
@@ -595,6 +595,11 @@ def _run_agent_chat_loop(
         else:
             try:
                 if use_tui:
+                    # If a SIGWINCH arrived since the last turn, fully heal
+                    # the layout for the new terminal dimensions before
+                    # drawing the prompt.
+                    if tui_heal.sigwinch_pending():
+                        tui_heal.heal()
                     tui_heal.cursor_guard()  # Layer 3: nudge cursor out of footer before raw mode
                 user_input = tui.prompt() if use_tui else input_func('user> ')
             except (EOFError, KeyboardInterrupt):

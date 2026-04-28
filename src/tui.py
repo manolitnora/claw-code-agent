@@ -12,6 +12,7 @@ The scroll region handles the rest.
 from __future__ import annotations
 
 import os
+import re
 import select
 import shutil
 import sys
@@ -57,9 +58,64 @@ MAGENTA    = '\033[38;5;176m'
 _FOOTER_LINES = 5
 
 
+# Pre-compiled once — used by status builders on every footer redraw.
+# Strips SGR color codes so we can measure visible width before rendering.
+_RE_STRIP_ANSI = re.compile(r'\033\[[^m]*m')
+
+
+def _truncate_visible(text: str, max_visible: int, suffix: str = '…') -> str:
+    """Truncate to max_visible printable chars, preserving ANSI SGR spans.
+
+    Unlike text[:n] which could slice mid-escape and leak color, this walks
+    the string counting visible chars and copies escape sequences whole.
+    Always appends RESET after the suffix so nothing leaks into the next
+    write.
+    """
+    if not text:
+        return text
+    out: list[str] = []
+    visible = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '\033' and i + 1 < n and text[i + 1] == '[':
+            # Copy the whole SGR sequence (up to 'm') without counting it.
+            j = i + 2
+            while j < n and text[j] != 'm':
+                j += 1
+            out.append(text[i:j + 1])
+            i = j + 1
+            continue
+        if visible >= max_visible:
+            out.append(suffix)
+            out.append(RESET)
+            break
+        out.append(ch)
+        visible += 1
+        i += 1
+    return ''.join(out)
+
+# Lazy-imported once at module load time — avoids a per-tool-call import inside
+# tool_result / tool_error. Set to None if tui_heal isn't available.
+try:
+    from .tui_heal import sanitize as _sanitize
+except Exception:
+    _sanitize = None  # type: ignore[assignment]
+
+
 def _w(s: str) -> None:
     sys.stdout.write(s)
     sys.stdout.flush()
+
+
+def _wb(s: str) -> None:
+    """Buffered write — no flush. For batched writes inside a single render pass.
+
+    Callers MUST call sys.stdout.flush() at the end of the render.
+    Using this instead of _w() inside _draw_footer cuts 7 flushes to 1.
+    """
+    sys.stdout.write(s)
 
 
 def _cols() -> int:
@@ -154,7 +210,9 @@ def set_state(
 #  row r:   status line 2  — model │ context bar │ cost │ tokens
 # ---------------------------------------------------------------------------
 
-def _fmt_tokens(tok: int) -> str:
+def _fmt_tokens(tok: int | None) -> str:
+    if not tok or tok < 0:
+        return '0'
     if tok >= 1_000_000:
         return f'{tok / 1_000_000:.1f}M'
     if tok >= 1_000:
@@ -175,8 +233,7 @@ def _build_status1() -> str:
     if sess:
         parts.append(f'{DARK_GRAY}sess:{GRAY}{sess}{RESET}')
     line = f'  {DARK_GRAY}│{RESET} '.join(parts)
-    import re as _re
-    plain = _re.sub(r'\033\[[^m]*m', '', line)
+    plain = _RE_STRIP_ANSI.sub('', line)
     if len(plain) > c:
         line = f'  {G_BRIGHT}{cwd}{RESET}'
     return line
@@ -184,23 +241,24 @@ def _build_status1() -> str:
 
 def _build_status2() -> str:
     """Bottom status line: model │ context bar │ cost │ tokens │ turn N."""
-    import re as _re
     c      = _cols()
     model  = _state['model']
     short  = model.split('/')[-1] if '/' in model else model
     pct    = _state['context_pct']
-    filled = max(0, pct // 10)
+    filled = max(0, min(10, pct // 10))
     bar    = f'{G_BRIGHT}{"█" * filled}{DARK_GRAY}{"░" * (10 - filled)}{RESET}'
     tok    = _fmt_tokens(_state['total_tokens'])
-    cost   = _state['cost_usd']
+    cost   = _state['cost_usd'] or 0.0
     cost_s = f'${cost:.4f}' if cost > 0.001 else '$0.00'
     turn   = _state['turn_count']
 
     # Build plain-text version first for length check, then apply colour
     plain_core = f'  {short}  {" " * 10}  {pct}%  |  {cost_s}  |  {tok} tokens  |  turn {turn}'
     if len(plain_core) > c:
-        # Shorten model name
-        short = short[:max(4, c - len(plain_core) + len(short))]
+        # Shorten model name — keep at least 4 chars
+        overflow = len(plain_core) - c
+        new_len = max(4, len(short) - overflow)
+        short = short[:new_len]
 
     line = (f'  {G_MID}{short}{RESET}  {bar}  {GRAY}{pct}%{RESET}'
             f'  {DARK_GRAY}│{RESET}  {GRAY}{cost_s}{RESET}'
@@ -208,7 +266,7 @@ def _build_status2() -> str:
             f'  {DARK_GRAY}│{RESET}  {DARK_GRAY}turn {GRAY}{turn}{RESET}')
 
     # Safe truncation: strip at plain-text boundary, not ANSI byte position
-    plain = _re.sub(r'\033\[[^m]*m', '', line)
+    plain = _RE_STRIP_ANSI.sub('', line)
     if len(plain) > c:
         # Rebuild without turn (least important)
         line = (f'  {G_MID}{short}{RESET}  {bar}  {GRAY}{pct}%{RESET}'
@@ -229,6 +287,8 @@ def _draw_footer(prompt_text: str = '') -> None:
     - Watchdog thread is disabled (no threading race on cursor position)
     - Scroll region bounds prevent cursor going below content_bottom
       during normal content writes
+
+    Batches all writes into a single string + one flush (was 7 flushes).
     """
     _ensure_scroll_region()
     r = _rows()
@@ -237,16 +297,22 @@ def _draw_footer(prompt_text: str = '') -> None:
     stat1 = _build_status1()
     stat2 = _build_status2()
 
-    _w('\0337')  # DEC save cursor (position in content area)
-    _w(f'\033[{r-4};1H\033[2K{div}')
     if prompt_text:
-        _w(f'\033[{r-3};1H\033[2K{DARK_GRAY}  {prompt_text}{RESET}')
+        prompt_row = f'\033[{r-3};1H\033[2K{DARK_GRAY}  {prompt_text}{RESET}'
     else:
-        _w(f'\033[{r-3};1H\033[2K{G_BRIGHT}{BOLD}❯  {WHITE}')
-    _w(f'\033[{r-2};1H\033[2K{div}')
-    _w(f'\033[{r-1};1H\033[2K{stat1}')
-    _w(f'\033[{r};1H\033[2K{stat2}')
-    _w('\0338')  # DEC restore cursor (back to content area)
+        prompt_row = f'\033[{r-3};1H\033[2K{G_BRIGHT}{BOLD}❯  {WHITE}'
+
+    # Single batched write — one syscall, one flush.
+    sys.stdout.write(
+        '\0337'                                    # DEC save cursor
+        f'\033[{r-4};1H\033[2K{div}'
+        f'{prompt_row}'
+        f'\033[{r-2};1H\033[2K{div}'
+        f'\033[{r-1};1H\033[2K{stat1}'
+        f'\033[{r};1H\033[2K{stat2}'
+        '\0338'                                    # DEC restore cursor
+    )
+    sys.stdout.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -362,19 +428,40 @@ def _read_multiline() -> str:
                     _w('\b \b')
                 continue
 
-            # Arrow keys and other escape sequences — swallow silently
-            # (raw mode sends ESC [ A/B/C/D for arrow keys; printing them
-            # would emit literal '[A' etc. into the prompt)
+            # Arrow keys and other escape sequences — swallow silently.
+            # Raw mode sends multi-byte sequences for arrow keys, function
+            # keys, Ctrl/Alt combos, bracketed paste markers, etc. Printing
+            # any of it would emit literal '[A' / '[200~' into the prompt.
+            #
+            # Sequences have variable length:
+            #   \x1b[A                  (3 bytes, arrow)
+            #   \x1b[1;5D               (6 bytes, Ctrl+Arrow)
+            #   \x1b[200~ ... \x1b[201~ (bracketed paste)
+            #
+            # Strategy: read the second byte (\x1b[ = CSI, \x1bO = SS3, or
+            # standalone ESC). Then read parameter bytes (\x30-\x3f) +
+            # intermediate bytes (\x20-\x2f) + one final byte (\x40-\x7e).
+            # Bail after 32 chars or a 50 ms idle gap to avoid hangs.
             if ch == '\x1b':
-                # read up to 2 more bytes of the escape sequence
                 try:
-                    seq = ch
                     ready_e, _, _ = select.select([sys.stdin], [], [], 0.05)
-                    if ready_e:
-                        seq += sys.stdin.read(1)
-                        ready_e2, _, _ = select.select([sys.stdin], [], [], 0.02)
-                        if ready_e2:
-                            seq += sys.stdin.read(1)
+                    if not ready_e:
+                        continue  # bare ESC keypress — discard
+                    introducer = sys.stdin.read(1)
+                    if introducer not in ('[', 'O'):
+                        continue  # unknown — discard introducer + ESC
+                    # Read until we see a final byte or we time out.
+                    for _ in range(32):
+                        ready_e2, _, _ = select.select([sys.stdin], [], [], 0.05)
+                        if not ready_e2:
+                            break
+                        b = sys.stdin.read(1)
+                        # Final byte of a CSI/SS3 sequence is 0x40-0x7e.
+                        if '\x40' <= b <= '\x7e':
+                            # For bracketed paste start (\x1b[200~) we'd
+                            # need to keep reading until \x1b[201~. We
+                            # don't support bracketed paste yet; just drop.
+                            break
                 except Exception:
                     pass
                 continue  # discard entire escape sequence
@@ -444,8 +531,15 @@ class StreamRenderer:
         self._pending        = ''
 
     def start(self) -> None:
+        # Reset parse state so the same renderer can be re-used across turns
+        # without carrying a half-open bold/code/code-block span from a
+        # previous stream.
+        self._in_bold        = False
+        self._in_code_inline = False
+        self._in_code_block  = False
+        self._pending        = ''
+        self._line_start     = True
         _w(f'\n{WHITE}')
-        self._line_start = True
 
     def token(self, text: str) -> None:
         text = self._pending + text
@@ -527,13 +621,20 @@ class StreamRenderer:
             i += 1
 
     def end(self) -> None:
+        # Flush any pending partial token (e.g. a lone '#' that hadn't found
+        # its newline yet, or the opening '```' of an unterminated code fence).
         if self._pending:
             _w(self._pending)
             self._pending = ''
-        if self._in_bold:
+        # Close any open span so the terminal returns to default color.
+        # Without this, a stream that terminates mid-bold or inside a code
+        # block leaks color into whatever gets rendered next (tool bands,
+        # user echo, the footer).
+        if self._in_bold or self._in_code_inline or self._in_code_block:
             _w(RESET)
-        if self._in_code_inline:
-            _w(RESET)
+            self._in_bold = False
+            self._in_code_inline = False
+            self._in_code_block = False
         _w(f'{RESET}\n')
 
 
@@ -549,30 +650,30 @@ def tool_start(name: str, detail: str = '') -> None:
     """pi-style tool header: icon + bold label + dim command. No background band."""
     icon  = _tool_icon(name)
     label = _tool_label(name)
-    cmd   = detail if detail else ''
+    cmd   = detail or ''
     max_cmd = max(10, _cols() - len(label) - 12)
-    if len(cmd) > max_cmd:
-        cmd = cmd[:max_cmd - 1] + '…'
+    if cmd:
+        cmd = _truncate_visible(cmd, max_cmd)
     cmd_part = f' {DARK_GRAY}{cmd}{RESET}' if cmd else ''
     _w(f'\n{G_MID}{BOLD}  {icon} {label}{RESET}{cmd_part}\n')
 
 
 def tool_result(name: str, summary: str) -> None:
     """Output line + pi-style separator with inline metadata."""
-    try:
-        from .tui_heal import sanitize as _sanitize
-        summary = _sanitize(summary)
-    except Exception:
-        pass
+    if _sanitize is not None:
+        try:
+            summary = _sanitize(summary)
+        except Exception:
+            pass
 
     # Count lines for expand hint
     n_lines = summary.count('\n') + 1
     _tool_line_counts[name] = n_lines
 
-    # Show first line of output
-    first = summary.split('\n')[0]
-    if len(first) > 120:
-        first = first[:117] + '…'
+    # Show first line of output. _truncate_visible preserves ANSI SGR spans
+    # so we never slice mid-escape and leak color.
+    first = summary.split('\n', 1)[0]
+    first = _truncate_visible(first, 117)
 
     _w(f'{DARK_GRAY}  ⎿ {GRAY}{first}{RESET}\n')
 
@@ -585,12 +686,12 @@ def tool_result(name: str, summary: str) -> None:
 
 
 def tool_error(name: str, error: str) -> None:
-    try:
-        from .tui_heal import sanitize as _sanitize
-        error = _sanitize(error)
-    except Exception:
-        pass
-    _w(f'{RED}  ⎿ {error[:120]}{RESET}\n')
+    if _sanitize is not None:
+        try:
+            error = _sanitize(error)
+        except Exception:
+            pass
+    _w(f'{RED}  ⎿ {_truncate_visible(error, 120)}{RESET}\n')
     _w(f'{DARK_GRAY}  {"─" * (_cols() - 2)}{RESET}\n')
 
 
