@@ -184,6 +184,7 @@ def _build_status1() -> str:
 
 def _build_status2() -> str:
     """Bottom status line: model │ context bar │ cost │ tokens │ turn N."""
+    import re as _re
     c      = _cols()
     model  = _state['model']
     short  = model.split('/')[-1] if '/' in model else model
@@ -195,15 +196,24 @@ def _build_status2() -> str:
     cost_s = f'${cost:.4f}' if cost > 0.001 else '$0.00'
     turn   = _state['turn_count']
 
+    # Build plain-text version first for length check, then apply colour
+    plain_core = f'  {short}  {" " * 10}  {pct}%  |  {cost_s}  |  {tok} tokens  |  turn {turn}'
+    if len(plain_core) > c:
+        # Shorten model name
+        short = short[:max(4, c - len(plain_core) + len(short))]
+
     line = (f'  {G_MID}{short}{RESET}  {bar}  {GRAY}{pct}%{RESET}'
             f'  {DARK_GRAY}│{RESET}  {GRAY}{cost_s}{RESET}'
             f'  {DARK_GRAY}│{RESET}  {GRAY}{tok} tokens'
             f'  {DARK_GRAY}│{RESET}  {DARK_GRAY}turn {GRAY}{turn}{RESET}')
 
-    import re as _re
+    # Safe truncation: strip at plain-text boundary, not ANSI byte position
     plain = _re.sub(r'\033\[[^m]*m', '', line)
     if len(plain) > c:
-        line = line[:c - 1]
+        # Rebuild without turn (least important)
+        line = (f'  {G_MID}{short}{RESET}  {bar}  {GRAY}{pct}%{RESET}'
+                f'  {DARK_GRAY}│{RESET}  {GRAY}{cost_s}{RESET}'
+                f'  {DARK_GRAY}│{RESET}  {GRAY}{tok} tokens{RESET}')
     return line
 
 
@@ -264,7 +274,7 @@ def cleanup() -> None:
     global _active, _last_rows
     if _active:
         r = _rows()
-        _w(f'\033[{r - 4};1H\033[J')
+        _w(f'\033[{r - (_FOOTER_LINES - 1)};1H\033[J')
         _w(f'\033[1;{r}r')
         _w(f'\033[{r};1H\n')
         _active    = False
@@ -272,13 +282,8 @@ def cleanup() -> None:
 
 
 def status_footer() -> None:
-    """Redraw footer with current state. Called after each turn.
-
-    _draw_footer() lands cursor at content_bottom — correct for next
-    content write (streaming response starts there and scrolls upward).
-    """
-    _ensure_scroll_region()
-    _draw_footer()
+    """Redraw footer with current state. Called after each turn."""
+    _draw_footer()  # _draw_footer already calls _ensure_scroll_region internally
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +362,23 @@ def _read_multiline() -> str:
                     _w('\b \b')
                 continue
 
+            # Arrow keys and other escape sequences — swallow silently
+            # (raw mode sends ESC [ A/B/C/D for arrow keys; printing them
+            # would emit literal '[A' etc. into the prompt)
+            if ch == '\x1b':
+                # read up to 2 more bytes of the escape sequence
+                try:
+                    seq = ch
+                    ready_e, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if ready_e:
+                        seq += sys.stdin.read(1)
+                        ready_e2, _, _ = select.select([sys.stdin], [], [], 0.02)
+                        if ready_e2:
+                            seq += sys.stdin.read(1)
+                except Exception:
+                    pass
+                continue  # discard entire escape sequence
+
             current.append(ch)
             _w(ch)
 
@@ -384,11 +406,9 @@ def prompt() -> str:
     summary = user_input.replace('\n', ' ↵ ')
     if len(summary) > 80:
         summary = summary[:77] + '…'
-    # DEC save is at r-3 (prompt row); after restore cursor is at r-3.
-    # Move explicitly to content_bottom so response flows from the bottom
-    # of the scroll region upward (standard chat-style).
     _draw_footer(prompt_text=f'{DARK_GRAY}{summary}{RESET}')
-    _w(f'\033[{content_bottom};1H')
+    # Do NOT jump to content_bottom — let DEC restore return cursor to
+    # wherever content ended so next turn writes directly below, no gap.
     return user_input
 
 
@@ -624,18 +644,7 @@ def thinking_clear() -> None:
     pass
 
 def thinking_block(thinking_text: str, token_count: int = 0) -> None:
-    if not thinking_text:
-        return
-    _w(f'\n{ORANGE}[thinking]{RESET}')
-    if token_count > 0:
-        _w(f' {CYAN}({token_count} tokens){RESET}')
-    _w('\n')
-    display_text = thinking_text[:500]
-    if len(thinking_text) > 500:
-        display_text += f'\n{CYAN}… ({len(thinking_text) - 500} more chars){RESET}'
-    _w(display_text)
-    _w('\n')
-    sys.stdout.flush()
+    pass  # silent — extended thinking not displayed in TUI
 
 def scar_match(scar_id: str, lesson: str, model: str) -> None:
     _w(f'\n{G_MID}[scar]{RESET} {GRAY}{scar_id}{RESET}\n')
