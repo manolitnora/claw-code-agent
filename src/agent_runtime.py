@@ -365,6 +365,11 @@ class LocalCodingAgent:
         )
         self._accumulate_usage(result)
         self._finalize_managed_agent(result)
+        
+        # ROTATION GATE: Check if we should rotate to self-directed work
+        # This is the decision point that prevents orbit
+        self._check_rotation_gate(result)
+        
         return result
 
     def _inject_claim_matches(self, prompt: str) -> None:
@@ -4070,6 +4075,46 @@ class LocalCodingAgent:
             stop_reason=result.stop_reason,
         )
         self.resume_source_session_id = None
+
+    def _check_rotation_gate(self, result: AgentRunResult) -> None:
+        """Check if we should rotate to self-directed work.
+        
+        This is the decision gate that prevents orbit. It evaluates three layers
+        of cost (audit, orbit, debt) and forces rotation if total cost exceeds
+        threshold. Best-effort; failures are swallowed.
+        """
+        import sys
+        from pathlib import Path
+        try:
+            latti_home = Path.home() / '.latti'
+            if not (latti_home / 'last_session').is_file():
+                return
+            
+            sys.path.insert(0, str(latti_home / 'lib'))
+            from rotation_gate import should_rotate  # type: ignore[import-not-found]
+            
+            if should_rotate():
+                # Log rotation decision
+                import json
+                import time
+                journal_path = latti_home / 'memory' / 'rotation_journal.jsonl'
+                journal_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                entry = {
+                    'timestamp': time.time(),
+                    'session_id': os.environ.get('LATTI_SESSION_ID', result.session_id),
+                    'reason': 'rotation_gate_fired',
+                    'turns': result.turns,
+                    'stop_reason': result.stop_reason,
+                }
+                with open(journal_path, 'a') as f:
+                    f.write(json.dumps(entry) + '\n')
+                
+                # TODO: Trigger rotation to self-directed work mode
+                # This would involve switching the agent to work on pending self-axis tasks
+        except Exception:
+            # Fail silent — must never break the model loop
+            pass
 
     def _accumulate_usage(self, result: AgentRunResult) -> None:
         """Add a run's usage to the cumulative session totals."""
