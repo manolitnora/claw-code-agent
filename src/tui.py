@@ -210,13 +210,15 @@ def _build_status2() -> str:
 def _draw_footer(prompt_text: str = '') -> None:
     """Draw the 5-line footer at absolute row positions.
 
-    No DEC save/restore — that was causing cursor corruption (the save would
-    capture a footer-row position after any drift, and restore would put the
-    cursor back there, splitting subsequent content into two columns).
+    Uses DEC save/restore (ESC 7 / ESC 8) to preserve the calling cursor
+    position so content flows continuously without gaps between turns.
 
-    Contract: after this call the cursor sits at content_bottom.  Callers
-    that need the cursor somewhere else (e.g. banner → row 1) must move it
-    explicitly AFTER calling _draw_footer.
+    Safe now because:
+    - _ensure_scroll_region() is never called from content functions
+      (no DECSTBM mid-stream that would teleport cursor to row 1)
+    - Watchdog thread is disabled (no threading race on cursor position)
+    - Scroll region bounds prevent cursor going below content_bottom
+      during normal content writes
     """
     _ensure_scroll_region()
     r = _rows()
@@ -225,7 +227,7 @@ def _draw_footer(prompt_text: str = '') -> None:
     stat1 = _build_status1()
     stat2 = _build_status2()
 
-    content_bottom = r - _FOOTER_LINES
+    _w('\0337')  # DEC save cursor (position in content area)
     _w(f'\033[{r-4};1H\033[2K{div}')
     if prompt_text:
         _w(f'\033[{r-3};1H\033[2K{DARK_GRAY}  {prompt_text}{RESET}')
@@ -234,8 +236,7 @@ def _draw_footer(prompt_text: str = '') -> None:
     _w(f'\033[{r-2};1H\033[2K{div}')
     _w(f'\033[{r-1};1H\033[2K{stat1}')
     _w(f'\033[{r};1H\033[2K{stat2}')
-    # Land cursor at content_bottom — safe position for content writes
-    _w(f'\033[{content_bottom};1H')
+    _w('\0338')  # DEC restore cursor (back to content area)
 
 
 # ---------------------------------------------------------------------------
@@ -383,22 +384,24 @@ def prompt() -> str:
     summary = user_input.replace('\n', ' ↵ ')
     if len(summary) > 80:
         summary = summary[:77] + '…'
+    # DEC save is at r-3 (prompt row); after restore cursor is at r-3.
+    # Move explicitly to content_bottom so response flows from the bottom
+    # of the scroll region upward (standard chat-style).
     _draw_footer(prompt_text=f'{DARK_GRAY}{summary}{RESET}')
     _w(f'\033[{content_bottom};1H')
     return user_input
 
 
 # ---------------------------------------------------------------------------
-# User message echo — pi-style highlighted band
+# User message echo — pi-style: subtle ❯ prefix, no background band
 # ---------------------------------------------------------------------------
 
 def user_message(text: str) -> None:
-    """Display the user's message as a highlighted dark-green band."""
-    lines = text.split('\n') if '\n' in text else [text]
-    _w('\n')
-    for line in lines:
-        _w(f'{BG_USER}{OFF_WHITE}  {line}\033[K{RESET}\n')
-    _w(RESET)
+    """Echo the user's message pi-style: dim ❯ prefix, no background fill."""
+    first, *rest = text.split('\n') if '\n' in text else [text]
+    _w(f'\n{DARK_GRAY}  ❯ {GRAY}{first}{RESET}\n')
+    for line in rest:
+        _w(f'{DARK_GRAY}    {GRAY}{line}{RESET}\n')
 
 
 # ---------------------------------------------------------------------------
@@ -516,15 +519,15 @@ _tool_line_counts: dict[str, int] = {}
 
 
 def tool_start(name: str, detail: str = '') -> None:
-    """pi-style tool header: dark band with icon + label + command."""
+    """pi-style tool header: icon + bold label + dim command. No background band."""
     icon  = _tool_icon(name)
     label = _tool_label(name)
-    cmd   = detail if detail else label
-    # Truncate so line never wraps (wrapping corrupts scroll region)
-    max_cmd = max(10, _cols() - len(label) - 10)
+    cmd   = detail if detail else ''
+    max_cmd = max(10, _cols() - len(label) - 12)
     if len(cmd) > max_cmd:
         cmd = cmd[:max_cmd - 1] + '…'
-    _w(f'\n{BG_TOOL}{G_MID}{BOLD}{icon} {label}{RESET}{BG_TOOL}  {DARK_GRAY}{cmd}\033[K{RESET}\n')
+    cmd_part = f' {DARK_GRAY}{cmd}{RESET}' if cmd else ''
+    _w(f'\n{G_MID}{BOLD}  {icon} {label}{RESET}{cmd_part}\n')
 
 
 def tool_result(name: str, summary: str) -> None:
