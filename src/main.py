@@ -552,8 +552,15 @@ def _run_agent_chat_loop(
     cumulative_output_tokens = 0
     turn_count = 0
 
-    # Use TUI when default funcs, fallback for tests with custom funcs
-    use_tui = (input_func is input and output_func is print)
+    # Use TUI only for an actual interactive terminal. Piped smoke tests and
+    # non-TTY launches cannot support termios raw mode; fall back to plain
+    # input/output instead of throwing termios.error at tui.prompt().
+    use_tui = (
+        input_func is input
+        and output_func is print
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+    )
 
     if use_tui:
         tui.banner()
@@ -786,16 +793,22 @@ def _run_agent_chat_loop(
             except Exception:
                 pass
             return 75
-        # Detect if the LLM called speak.sh this turn (via bash tool)
-        _detect_llm_spoke(result)
-        # Voice — speak first 2 sentences of response (skips if LLM already spoke)
-        _speak_response(result.final_output)
-        # Self-sculpt — evaluate AND mutate (zero tokens, real-time self-modification)
-        try:
-            from .self_sculpt import sculpt as _sculpt
-            _fired = _sculpt(result.final_output or '', agent=agent)
-        except Exception:
+        if os.environ.get('LATTI_LOW_MEM') == '1':
+            # Lightweight mode: keep the interactive loop alive, but skip
+            # optional post-turn hooks that spawn subprocesses/import extra
+            # modules and have repeatedly triggered macOS jetsam under low RAM.
             _fired = []
+        else:
+            # Detect if the LLM called speak.sh this turn (via bash tool)
+            _detect_llm_spoke(result)
+            # Voice — speak first 2 sentences of response (skips if LLM already spoke)
+            _speak_response(result.final_output)
+            # Self-sculpt — evaluate AND mutate (zero tokens, real-time self-modification)
+            try:
+                from .self_sculpt import sculpt as _sculpt
+                _fired = _sculpt(result.final_output or '', agent=agent)
+            except Exception:
+                _fired = []
         # === TURN COMPLETE — signal the human ===
         if use_tui:
             tui.done_marker()
@@ -925,6 +938,8 @@ def _speak_response(text: str) -> None:
     3. Find the first real sentence, not just the first 2 tokens
     """
     global _last_speak_proc, _llm_spoke_this_turn
+    if os.environ.get('LATTI_LOW_MEM') == '1':
+        return
     import re as _re
 
     speak_script = os.path.expanduser('~/.claude/scripts/speak.sh')
