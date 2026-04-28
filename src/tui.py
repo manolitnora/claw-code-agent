@@ -163,31 +163,27 @@ def _fmt_tokens(tok: int) -> str:
 
 
 def _build_status1() -> str:
-    """Top status line: project path │ branch │ session │ turns."""
+    """Top status line: project path │ branch │ session."""
     c = _cols()
-    cwd  = _state['cwd']
+    cwd    = _state['cwd']
     branch = _state['branch']
-    sess = _state['session_id'][:8] if _state['session_id'] else ''
-    turn = _state['turn_count']
+    sess   = _state['session_id'][:8] if _state['session_id'] else ''
 
     parts = [f'  {G_BRIGHT}{cwd}{RESET}']
     if branch:
         parts.append(f'{DARK_GRAY}({G_MID}{branch}{DARK_GRAY}){RESET}')
     if sess:
         parts.append(f'{DARK_GRAY}sess:{GRAY}{sess}{RESET}')
-    parts.append(f'{DARK_GRAY}turn {GRAY}{turn}{RESET}')
     line = f'  {DARK_GRAY}│{RESET} '.join(parts)
-    # strip ANSI for length check
     import re as _re
     plain = _re.sub(r'\033\[[^m]*m', '', line)
     if len(plain) > c:
-        # fallback: just cwd + turn
-        line = f'  {G_BRIGHT}{cwd}{RESET}  {DARK_GRAY}turn {GRAY}{turn}{RESET}'
+        line = f'  {G_BRIGHT}{cwd}{RESET}'
     return line
 
 
 def _build_status2() -> str:
-    """Bottom status line: model │ context bar │ cost │ tokens."""
+    """Bottom status line: model │ context bar │ cost │ tokens │ turn N."""
     c      = _cols()
     model  = _state['model']
     short  = model.split('/')[-1] if '/' in model else model
@@ -197,8 +193,12 @@ def _build_status2() -> str:
     tok    = _fmt_tokens(_state['total_tokens'])
     cost   = _state['cost_usd']
     cost_s = f'${cost:.4f}' if cost > 0.001 else '$0.00'
+    turn   = _state['turn_count']
 
-    line = f'  {G_MID}{short}{RESET}  {bar}  {GRAY}{pct}%{RESET}  {DARK_GRAY}│{RESET}  {GRAY}{cost_s}{RESET}  {DARK_GRAY}│{RESET}  {GRAY}{tok} tokens{RESET}'
+    line = (f'  {G_MID}{short}{RESET}  {bar}  {GRAY}{pct}%{RESET}'
+            f'  {DARK_GRAY}│{RESET}  {GRAY}{cost_s}{RESET}'
+            f'  {DARK_GRAY}│{RESET}  {GRAY}{tok} tokens'
+            f'  {DARK_GRAY}│{RESET}  {DARK_GRAY}turn {GRAY}{turn}{RESET}')
 
     import re as _re
     plain = _re.sub(r'\033\[[^m]*m', '', line)
