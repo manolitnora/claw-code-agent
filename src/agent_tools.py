@@ -1085,13 +1085,15 @@ def default_tool_registry() -> dict[str, AgentTool]:
         AgentTool(
             name='lattice_solve',
             description=(
-                'Solve an optimization problem using Latti\'s lattice Monte Carlo engine. '
-                'The solver uses discretize → sample → measure decay with auto-compactification, '
-                'parallel tempering, FFT landscape analysis, and gradient polish. '
-                'Input is a natural-language optimization problem or a structured expression. '
-                'Examples: "minimize x0^2 + x1^2 in [-5,5] x [-5,5]", '
-                '"find the minimum of f(x,y) = (x-3)^2 + (y+1)^2 for x in [-10,10], y in [-10,10]". '
-                'Returns the optimal point, value, convergence info, and solver diagnostics.'
+                'Solve any continuous optimization or minimization problem. '
+                'Use this whenever you need to: find the minimum/maximum of a function, '
+                'tune parameters to hit a target, search for optimal values in a range, '
+                'or answer "what values of X minimize Y?" questions. '
+                'Input: plain-English problem description. '
+                'Examples: "minimize x^2 + y^2 in [-5,5] x [-5,5]", '
+                '"find x in [0,10] that minimizes (x-3.7)^2", '
+                '"what weight w minimizes 0.4*error + w*cost for w in [0,1]?". '
+                'Returns: optimal point, minimum value, convergence status, solver diagnostics.'
             ),
             parameters={
                 'type': 'object',
@@ -1114,13 +1116,12 @@ def default_tool_registry() -> dict[str, AgentTool]:
         AgentTool(
             name='lattice_boolean_solve',
             description=(
-                'Solve a discrete optimization problem over {0,1}^n using boolean lattice. '
-                'Uses bit-flip simulated annealing with three-phase adaptive temperature. '
-                'Input: problem statement with variables and optional constraints. '
-                'Example: "minimize 3*use_opus + 2*use_cache with variables [use_opus, use_cache] '
-                'subject to [use_opus + use_cache <= 1]". '
-                'Returns optimal bit assignment, cost, confidence, feasibility, and marginal probabilities. '
-                'Use for: model selection, constraint activation, pattern matching.'
+                'Make optimal yes/no decisions under constraints. '
+                'Use when you need to choose which options to activate/enable given costs and rules. '
+                'Examples: "should I use cache AND streaming, or just one? minimize cost with use_cache + use_stream <= 1", '
+                '"which 2 of these 5 features to enable to minimize latency?", '
+                '"model selection: pick cheapest model that meets quality threshold". '
+                'Returns: which variables to set to 1 (on) vs 0 (off), cost, feasibility, confidence.'
             ),
             parameters={
                 'type': 'object',

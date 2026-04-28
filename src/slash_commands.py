@@ -116,7 +116,7 @@ def _help(args: list[str], ctx: CommandContext) -> CommandResult:
         name = args[0].lstrip('/')
         entry = _COMMANDS.get(name)
         if not entry:
-            _out(ctx, f'Unknown command: /{name}')
+            _out(ctx, f'Unknown command: /{name}  (try /help)')
             return CommandResult()
         _out(ctx, f'  {entry["usage"]}')
         _out(ctx, f'  {entry["help"]}')
@@ -143,6 +143,14 @@ def _help(args: list[str], ctx: CommandContext) -> CommandResult:
                 seen.add(entry['name'])
                 _out(ctx, f'    /{entry["usage"]:<30}  {entry["help"]}')
 
+    # Show runtime-level commands that fall through to agent_slash_commands
+    _out(ctx, '\n  Runtime (pass-through to agent)')
+    runtime_cmds = [
+        'context', 'mcp', 'lsp', 'worktree', 'config', 'search',
+        'remote', 'account', 'files', 'copy', 'export', 'stats',
+        'branch', 'effort', 'trust',
+    ]
+    _out(ctx, f'    {"  ".join("/" + c for c in runtime_cmds)}')
     _out(ctx, '')
     return CommandResult()
 
@@ -368,17 +376,29 @@ def _models(args: list[str], ctx: CommandContext) -> CommandResult:
 # /memory
 # ---------------------------------------------------------------------------
 
-@_cmd('memory', aliases=['mem'], help='List memory entries or read one', usage='memory [key]')
+@_cmd('memory', aliases=['mem'], help='List, read, or prune memory entries', usage='memory [key|prune [days]]')
 def _memory(args: list[str], ctx: CommandContext) -> CommandResult:
     mem_dir = pathlib.Path.home() / '.latti' / 'memory'
+
+    # /memory prune [days=30]
+    if args and args[0] == 'prune':
+        days = int(args[1]) if len(args) > 1 else 30
+        return _memory_prune(ctx, mem_dir, days)
+
     if not args:
         _heading(ctx, 'Memory')
         if not mem_dir.exists() or not list(mem_dir.glob('*.md')):
             _out(ctx, '  (empty — use memory_write tool to store things)')
         else:
-            for p in sorted(mem_dir.glob('*.md')):
-                size = p.stat().st_size
-                _out(ctx, f'  {p.stem:<30}  {size}B')
+            entries = sorted(mem_dir.glob('*.md'), key=lambda p: p.stat().st_mtime, reverse=True)
+            _out(ctx, f'  {len(entries)} entries  (newest first)')
+            for p in entries:
+                import time
+                age_days = (time.time() - p.stat().st_mtime) / 86400
+                age_s = f'{age_days:.0f}d'
+                _out(ctx, f'  {p.stem:<36}  {p.stat().st_size:>6}B  {age_s:>4} ago')
+        _out(ctx, '')
+        _out(ctx, '  /memory prune [days]  — delete entries older than N days (default 30)')
         _out(ctx, '')
         return CommandResult()
 
@@ -392,6 +412,26 @@ def _memory(args: list[str], ctx: CommandContext) -> CommandResult:
         for line in p.read_text(encoding='utf-8').splitlines():
             _out(ctx, f'  {line}')
         _out(ctx, '')
+    return CommandResult()
+
+
+def _memory_prune(ctx: CommandContext, mem_dir: pathlib.Path, days: int) -> CommandResult:
+    import time
+    if not mem_dir.exists():
+        _out(ctx, '  no memory directory')
+        return CommandResult()
+    cutoff = time.time() - days * 86400
+    entries = list(mem_dir.glob('*.md'))
+    old = [p for p in entries if p.stat().st_mtime < cutoff]
+    if not old:
+        _out(ctx, f'  nothing older than {days}d ({len(entries)} entries kept)')
+        return CommandResult()
+    _heading(ctx, f'Pruning {len(old)} entries older than {days}d')
+    for p in sorted(old, key=lambda x: x.stat().st_mtime):
+        age = (time.time() - p.stat().st_mtime) / 86400
+        _out(ctx, f'  deleted  {p.stem}  ({age:.0f}d old)')
+        p.unlink()
+    _out(ctx, f'\n  {len(entries) - len(old)} entries remain')
     return CommandResult()
 
 
@@ -724,8 +764,16 @@ def _exit(args: list[str], ctx: CommandContext) -> CommandResult:
 # ---------------------------------------------------------------------------
 
 def is_command(text: str) -> bool:
-    """Return True if text is a slash command."""
-    return text.strip().startswith('/')
+    """Return True only if text is a slash command registered in OUR handler.
+
+    Unknown /commands fall through to agent_slash_commands (runtime level)
+    which handles /mcp, /worktree, /lsp, /context, /config, /remote etc.
+    Previously this returned True for ALL /x which silently swallowed those.
+    """
+    parts = text.strip().lstrip('/').split()
+    if not parts:
+        return False
+    return parts[0].lower() in _COMMANDS
 
 
 def handle_command(text: str, ctx: CommandContext) -> CommandResult:
