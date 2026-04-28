@@ -87,6 +87,9 @@ def _add_agent_common_args(parser: argparse.ArgumentParser, *, include_backend: 
     parser.add_argument('--max-model-calls', type=int)
     parser.add_argument('--max-session-turns', type=int)
     parser.add_argument('--max-output-chars', type=int, default=50000)
+    parser.add_argument('--command-timeout', type=float,
+                        default=float(os.environ.get('LATTI_COMMAND_TIMEOUT', '120')),
+                        help='Bash/shell command timeout in seconds (default 120, env: LATTI_COMMAND_TIMEOUT)')
     parser.add_argument('--response-schema-file')
     parser.add_argument('--response-schema-name')
     parser.add_argument('--response-schema-strict', action='store_true')
@@ -101,6 +104,8 @@ def _build_runtime_config(args: argparse.Namespace) -> AgentRuntimeConfig:
         cwd=Path(args.cwd).resolve(),
         max_turns=getattr(args, 'max_turns', 12),
         max_output_chars=getattr(args, 'max_output_chars', 50000),
+        command_timeout_seconds=float(getattr(args, 'command_timeout', None) or
+                                      os.environ.get('LATTI_COMMAND_TIMEOUT', '120')),
         permissions=AgentPermissions(
             allow_file_write=args.allow_write,
             allow_shell_commands=args.allow_shell,
