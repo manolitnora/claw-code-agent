@@ -615,15 +615,13 @@ def divider() -> None:
     _w(f'{DARK_GRAY}{"─" * c}{RESET}\n')
 
 def done_marker() -> None:
-    _w(f'\n{G_BRIGHT}{BOLD}  ◆ done{RESET}\n\n')
+    _w('\n')  # single blank line between response and next prompt
 
 def thinking_start() -> None:
-    _w(f'\n{ORANGE}  ⏳ Working…{RESET}')
-    sys.stdout.flush()
+    pass  # silent — no Working… indicator
 
 def thinking_clear() -> None:
-    _w('\033[A\033[2K')
-    sys.stdout.flush()
+    pass
 
 def thinking_block(thinking_text: str, token_count: int = 0) -> None:
     if not thinking_text:

@@ -771,9 +771,8 @@ def _run_agent_chat_loop(
             _fired = []
         # === TURN COMPLETE — signal the human ===
         if use_tui:
-            tui.done_marker()       # green ◆ done marker
-            sys.stdout.write('\a')  # terminal bell (BEL)
-            sys.stdout.flush()
+            tui.done_marker()
+            # bell removed
 
 
 _LATTI_HOME = os.path.expanduser('~/.latti')
