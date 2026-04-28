@@ -406,9 +406,16 @@ def prompt() -> str:
     summary = user_input.replace('\n', ' ↵ ')
     if len(summary) > 80:
         summary = summary[:77] + '…'
+    # Move cursor BACK into the content area before drawing footer.
+    # _draw_footer uses DEC save/restore (ESC 7/8); if cursor is left at r-3
+    # (where the user was typing in the footer prompt row), then save happens
+    # at r-3 — and after restore, subsequent user_message() / stream writes
+    # land inside the footer rows, where the next _draw_footer() overwrites
+    # them. That's the "prompt and answer appear then disappear" bug.
+    # Parking cursor at content_bottom ensures DEC restore returns cursor
+    # inside the scroll region, so the next writes flow safely into content.
+    _w(f'\033[{content_bottom};1H')
     _draw_footer(prompt_text=f'{DARK_GRAY}{summary}{RESET}')
-    # Do NOT jump to content_bottom — let DEC restore return cursor to
-    # wherever content ended so next turn writes directly below, no gap.
     return user_input
 
 
