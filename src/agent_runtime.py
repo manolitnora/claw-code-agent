@@ -4097,6 +4097,19 @@ class LocalCodingAgent:
             final_output = getattr(result, 'final_output', '') or ''
             if not final_output or len(final_output) < 80:
                 return
+            
+            # ENFORCE CITATIONS: rewrite uncited claims before registering
+            # This is the independent axis work that breaks orbit
+            try:
+                sys.path.insert(0, str(latti_home / 'lib'))
+                from citation_enforcer import enforce_citations
+                final_output, is_clean = enforce_citations(final_output, strict=False)
+                # Update result with rewritten output
+                if hasattr(result, 'final_output'):
+                    result.final_output = final_output
+            except Exception:
+                pass  # Citation enforcement is best-effort
+            
             register_from_response(
                 final_output,
                 session_id=os.environ.get('LATTI_SESSION_ID'),
