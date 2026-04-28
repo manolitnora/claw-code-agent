@@ -8,6 +8,7 @@ learned anti-patterns and blocks output that violates them.
 Pattern interrupts from ~/.latti/memory/ are loaded at boot and enforced here.
 """
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Optional
@@ -579,10 +580,11 @@ def _log_rewrite(applied: list[str], original_len: int, rewritten_len: int) -> N
         pass
 
 
-def apply_response_gate(response_text: str) -> str:
+def apply_response_gate(response_text: str, *, bypass: bool = False) -> str:
     """
     Enforce learned scars by REWRITING the response to remove violations.
 
+    Set LATTI_GATE=0 env var or pass bypass=True to skip (used for benchmarks).
     Previously: detected violations → appended report → user saw bad behaviour
     plus a confession. Pattern was logged but never absorbed because the
     behaviour itself shipped.
@@ -591,6 +593,9 @@ def apply_response_gate(response_text: str) -> str:
     Violations without a rewriter fall through to the legacy append-message
     path so they stay visible until a rewriter is added.
     """
+    if bypass or os.environ.get('LATTI_GATE', '1') == '0':
+        return response_text
+
     gate = ResponseGate()
     passes, _violations = gate.check(response_text)
     if passes:

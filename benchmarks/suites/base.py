@@ -94,6 +94,7 @@ class BenchmarkSuite(ABC):
         verbose: bool = False,
         artifacts_dir: str | None = None,
         save_passing_artifacts: bool = False,
+        rate_limit_seconds: float = 2.0,
     ) -> None:
         self.data_dir = data_dir or str(
             Path(__file__).resolve().parent.parent / "data"
@@ -104,6 +105,7 @@ class BenchmarkSuite(ABC):
         self.artifacts_dir = artifacts_dir
         self.save_passing_artifacts = save_passing_artifacts
         self.project_root = str(Path(__file__).resolve().parent.parent.parent)
+        self.rate_limit_seconds = rate_limit_seconds
 
     @abstractmethod
     def load_dataset(self) -> list[dict[str, Any]]:
@@ -124,12 +126,14 @@ class BenchmarkSuite(ABC):
         timeout: float = 30.0,
     ) -> tuple[int, str]:
         import copy
-        # Explicitly forward model credentials so the agent subprocess always
-        # has them, regardless of shell inheritance quirks.
-        env = copy.copy(os.environ)
-        for key in ('OPENAI_MODEL', 'OPENAI_BASE_URL', 'OPENAI_API_KEY'):
+        # Explicitly forward model credentials + disable behavioral gate for benchmarks
+        env = dict(os.environ)  # true copy — copy.copy(os.environ) returns _Environ which mutates real env
+        for key in ('OPENAI_MODEL', 'OPENAI_BASE_URL', 'OPENAI_API_KEY',
+                    'LATTI_COPILOT_HEADERS', 'LATTI_MODEL_HEAVY',
+                    'LATTI_MODEL_LIGHT', 'LATTI_MODEL_MICRO'):
             if key in os.environ:
                 env[key] = os.environ[key]
+        env['LATTI_GATE'] = '0'  # disable response gate — benchmarks need clean output
         try:
             proc = subprocess.run(
                 cmd,
@@ -261,6 +265,10 @@ class BenchmarkSuite(ABC):
         for index, problem in enumerate(problems, 1):
             pid = str(problem.get("id", problem.get("task_id", f"problem-{index}")))
             print(f"[{index}/{len(problems)}] {pid}")
+
+            # Rate limit between problems to avoid 429s from Copilot/OpenRouter
+            if index > 1 and self.rate_limit_seconds > 0:
+                time.sleep(self.rate_limit_seconds)
 
             workspace = make_temp_workspace("claw", self.name, pid)
             prompt = ""

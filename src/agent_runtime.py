@@ -853,7 +853,10 @@ class LocalCodingAgent:
                     last_content = ''.join(assistant_response_segments)
                     continue
                 final_output = ''.join(assistant_response_segments)
-                final_output = apply_response_gate(final_output)
+                final_output = apply_response_gate(
+                    final_output,
+                    bypass=os.environ.get('LATTI_GATE', '1') == '0',
+                )
                 result = AgentRunResult(
                     final_output=final_output,
                     turns=turn_index,
