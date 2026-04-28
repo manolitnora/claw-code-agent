@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Iterator
+import os
 from urllib import error, request
 
 from .agent_types import (
@@ -245,13 +246,24 @@ class OpenAICompatClient:
             output_schema=output_schema,
             model_override=model_override,
         )
+        headers = {
+            'Authorization': f'Bearer {self.config.api_key}',
+            'Content-Type': 'application/json',
+        }
+        # GitHub Copilot requires extra headers when base_url is githubcopilot.com
+        if 'githubcopilot.com' in self.config.base_url or os.environ.get('LATTI_COPILOT_HEADERS'):
+            headers.update({
+                'User-Agent':            'GitHubCopilotChat/0.35.0',
+                'Editor-Version':        'vscode/1.107.0',
+                'Editor-Plugin-Version': 'copilot-chat/0.35.0',
+                'Copilot-Integration-Id':'vscode-chat',
+                'X-Initiator':           'user',
+                'Openai-Intent':         'conversation-edits',
+            })
         req = request.Request(
             _join_url(self.config.base_url, '/chat/completions'),
             data=json.dumps(payload).encode('utf-8'),
-            headers={
-                'Authorization': f'Bearer {self.config.api_key}',
-                'Content-Type': 'application/json',
-            },
+            headers=headers,
             method='POST',
         )
         try:
@@ -271,13 +283,23 @@ class OpenAICompatClient:
 
     def _request_json(self, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode('utf-8')
+        headers = {
+            'Authorization': f'Bearer {self.config.api_key}',
+            'Content-Type': 'application/json',
+        }
+        if 'githubcopilot.com' in self.config.base_url or os.environ.get('LATTI_COPILOT_HEADERS'):
+            headers.update({
+                'User-Agent':            'GitHubCopilotChat/0.35.0',
+                'Editor-Version':        'vscode/1.107.0',
+                'Editor-Plugin-Version': 'copilot-chat/0.35.0',
+                'Copilot-Integration-Id':'vscode-chat',
+                'X-Initiator':           'user',
+                'Openai-Intent':         'conversation-edits',
+            })
         req = request.Request(
             _join_url(self.config.base_url, '/chat/completions'),
             data=body,
-            headers={
-                'Authorization': f'Bearer {self.config.api_key}',
-                'Content-Type': 'application/json',
-            },
+            headers=headers,
             method='POST',
         )
         try:
