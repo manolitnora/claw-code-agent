@@ -391,7 +391,20 @@ def _extract_bounds(text: str) -> list[tuple[float, float]]:
     return [(float(lo), float(hi)) for lo, hi in re.findall(r'\[([+-]?\d*\.?\d+)\s*,\s*([+-]?\d*\.?\d+)\]', text)]
 
 
+def _normalize_expr(expr: str, dims: int) -> str:
+    """Convert bare variable names (x, y, z, ...) to indexed form (x0, x1, x2, ...)."""
+    bare_names = ['x', 'y', 'z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k']
+    result = expr
+    for idx, name in enumerate(bare_names[:dims]):
+        result = re.sub(r'\b' + name + r'\b', f'x{idx}', result)
+    return result
+
+
+
 def _build_cost_fn(expr: str, dims: int) -> Optional[CostFn]:
+    # Normalize bare variable names to indexed form
+    expr = _normalize_expr(expr, dims)
+    
     # Validate: expression must reference x0..x{dims-1}
     if not any(f'x{i}' in expr for i in range(dims)):
         return None
