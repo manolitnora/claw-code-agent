@@ -549,7 +549,7 @@ def default_tool_registry() -> dict[str, AgentTool]:
                             {'type': 'number'},
                             {'type': 'integer'},
                             {'type': 'boolean'},
-                            {'type': 'array'},
+                            {'type': 'array', 'items': {}},
                             {'type': 'object'},
                             {'type': 'null'},
                         ]
