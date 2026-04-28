@@ -123,6 +123,13 @@ class BenchmarkSuite(ABC):
         cwd: str,
         timeout: float = 30.0,
     ) -> tuple[int, str]:
+        import copy
+        # Explicitly forward model credentials so the agent subprocess always
+        # has them, regardless of shell inheritance quirks.
+        env = copy.copy(os.environ)
+        for key in ('OPENAI_MODEL', 'OPENAI_BASE_URL', 'OPENAI_API_KEY'):
+            if key in os.environ:
+                env[key] = os.environ[key]
         try:
             proc = subprocess.run(
                 cmd,
@@ -131,6 +138,7 @@ class BenchmarkSuite(ABC):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=env,
             )
             return proc.returncode, (proc.stdout + proc.stderr).strip()
         except subprocess.TimeoutExpired:
