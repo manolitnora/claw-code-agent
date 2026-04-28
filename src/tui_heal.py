@@ -216,21 +216,15 @@ def cursor_guard() -> None:
 # ---------------------------------------------------------------------------
 
 def _watchdog_loop() -> None:
-    """Periodically blind-redraw the footer.
+    """Watchdog disabled — was causing threading race with main content writes.
 
-    Runs in a daemon thread.  Every _WATCHDOG_INTERVAL seconds it calls
-    _draw_footer() which (a) re-asserts the scroll region via
-    _ensure_scroll_region() and (b) repaints the 4 footer rows.
+    DECSTBM (scroll region set) moves cursor to row 1 per VT100 spec.
+    _draw_footer() lands cursor at content_bottom.
+    Either of these firing from a background thread mid-stream corrupts output.
 
-    This catches any corruption that slipped through layers 1-3.
+    Resize is handled by SIGWINCH (Layer 1).  The watchdog loop exits immediately.
     """
-    while not _watchdog_stop.wait(_WATCHDOG_INTERVAL):
-        try:
-            from . import tui as _tui
-            if _tui._active:
-                _tui._draw_footer()
-        except Exception:
-            pass
+    return
 
 
 # ---------------------------------------------------------------------------

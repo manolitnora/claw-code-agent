@@ -394,11 +394,9 @@ def prompt() -> str:
 
 def user_message(text: str) -> None:
     """Display the user's message as a highlighted dark-green band."""
-    _ensure_scroll_region()  # re-pin before user band
     lines = text.split('\n') if '\n' in text else [text]
-    _w(f'\n')
+    _w('\n')
     for line in lines:
-        # \033[K fills rest of line with BG_USER — no manual padding needed
         _w(f'{BG_USER}{OFF_WHITE}  {line}\033[K{RESET}\n')
     _w(RESET)
 
@@ -519,7 +517,6 @@ _tool_line_counts: dict[str, int] = {}
 
 def tool_start(name: str, detail: str = '') -> None:
     """pi-style tool header: dark band with icon + label + command."""
-    _ensure_scroll_region()  # re-pin before every tool block
     icon  = _tool_icon(name)
     label = _tool_label(name)
     cmd   = detail if detail else label
@@ -527,8 +524,6 @@ def tool_start(name: str, detail: str = '') -> None:
     max_cmd = max(10, _cols() - len(label) - 10)
     if len(cmd) > max_cmd:
         cmd = cmd[:max_cmd - 1] + '…'
-    # \033[K fills rest of line with current background —
-    # avoids manual char-counting which breaks on wide unicode/emoji.
     _w(f'\n{BG_TOOL}{G_MID}{BOLD}{icon} {label}{RESET}{BG_TOOL}  {DARK_GRAY}{cmd}\033[K{RESET}\n')
 
 
