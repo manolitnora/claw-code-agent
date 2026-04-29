@@ -53,13 +53,47 @@ class _ToolCallStub:
         self.id = f'tc_{name}'
 
 
-def test_flag_off_does_not_construct_state_machine_runner(tmp_path):
-    """Default is opt-in (after 02:22 revert from Step 6 default-on).
-    With no env var set, __post_init__ doesn't construct the runner."""
-    os.environ.pop('LATTI_USE_STATE_MACHINE', None)
+def test_explicit_opt_out_does_not_construct_state_machine_runner(tmp_path, monkeypatch):
+    """Step 6 (2026-04-29) made the typed loop primary. Explicit opt-out
+    via LATTI_USE_STATE_MACHINE=0 routes through the legacy fallback.
+    Lazy construction means __post_init__ doesn't create the runner regardless,
+    but a flag-0 dispatch will not construct it either since the runtime
+    branch never calls _dispatch_via_state_machine in that case."""
+    monkeypatch.setenv('LATTI_USE_STATE_MACHINE', '0')
     agent = _make_agent(tmp_path)
+    # Lazy: __post_init__ does NOT instantiate
     assert agent._sm_runner is None
     assert agent._sm_state is None
+
+
+def test_step6_default_remains_opt_out_not_opt_in():
+    """Step 6 contract: the gate at agent_runtime.py:1036 MUST be opt-out
+    (`!= '0'`), making the typed loop primary. A regression to opt-in
+    (`== '1'`) silently reverts the build to legacy primary — exactly the
+    accidental-revert path that almost happened during the 02:22 RAM-pressure
+    incident.
+
+    This test reads the source and asserts the gate's literal form. It catches
+    the single-character mutation that would otherwise pass every other test
+    (because every other test explicitly sets the env var)."""
+    from pathlib import Path
+    src_path = Path(__file__).parent.parent / 'src' / 'agent_runtime.py'
+    src = src_path.read_text(encoding='utf-8')
+
+    # Typed loop is primary: opt-out form must exist
+    assert "LATTI_USE_STATE_MACHINE') != '0'" in src, (
+        "Step 6 regression: typed-loop default should be opt-out via "
+        "`LATTI_USE_STATE_MACHINE != '0'`. The gate appears to have been "
+        "reverted to opt-in form."
+    )
+    # And the opt-in form must NOT be present at the dispatch gate
+    # (this string can still appear in comments / docstrings as historical
+    # reference, so we check it's not the active condition by counting
+    # occurrences in code-like context — a single occurrence is acceptable
+    # for prose/comments, but the active gate is the != '0' one).
+    # The strict assertion: the != '0' form is present, which is enough to
+    # prove the gate is opt-out. We do not forbid the literal '== ' string
+    # because comments may quote it.
 
 
 def test_flag_on_dispatch_executes_real_read_file(tmp_path, monkeypatch):

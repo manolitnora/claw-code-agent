@@ -124,10 +124,10 @@ class LocalCodingAgent:
     resume_source_session_id: str | None = field(default=None, init=False, repr=False)
     model_router: ModelRouter | None = field(default=None, init=False, repr=False)
     scar_router: ScarRouter | None = field(default=None, init=False, repr=False)
-    # State-machine bridge — lazy, opt-in via LATTI_USE_STATE_MACHINE=1.
-    # Step 6 default-on briefly tried at 02:19 but reverted at 02:22 after
-    # TUI kills under memory pressure (~393MB available, below 500MB threshold).
-    # Re-attempt deferred to a session with RAM headroom.
+    # State-machine bridge — PRIMARY path (Step 6 default-on, 2026-04-29).
+    # Lazy construction; opt OUT via LATTI_USE_STATE_MACHINE=0 if you need
+    # the legacy execute_tool_streaming fallback. The typed loop replaces
+    # legacy; legacy is fallback only.
     _sm_runner: 'object | None' = field(default=None, init=False, repr=False)
     _sm_state: 'object | None' = field(default=None, init=False, repr=False)
     _sm_memory: 'object | None' = field(default=None, init=False, repr=False)
@@ -1033,10 +1033,14 @@ class LocalCodingAgent:
                 if tool_call.name == 'delegate_agent':
                     if tool_result is None:
                         tool_result = self._execute_delegate_agent(tool_call.arguments)
-                elif tool_result is None and os.environ.get('LATTI_USE_STATE_MACHINE') == '1':
-                    # State-machine bridge — REVERTED TO OPT-IN at 02:22 after TUI kills
-                    # under memory pressure. To re-enable typed loop: LATTI_USE_STATE_MACHINE=1.
-                    # Step 6 default-on flip backed out pending RAM-safe re-attempt.
+                elif tool_result is None and os.environ.get('LATTI_USE_STATE_MACHINE') != '0':
+                    # State-machine bridge is the PRIMARY path (Step 6, 2026-04-29).
+                    # The typed loop replaces the legacy execute_tool_streaming
+                    # block; legacy is a fallback reachable via LATTI_USE_STATE_MACHINE=0.
+                    # The 02:22 TUI-kill incident was memory pressure (jetsam at
+                    # ~393MB SAFE), not the typed loop. The pre-launch gate in
+                    # ~/V5/latti now BLOCKS launch when SAFE_MB < LATTI_MIN_SAFE_MB
+                    # so memory-pressure kills can't recur.
                     tool_result = self._dispatch_via_state_machine(
                         tool_call,
                         session=session,
@@ -1044,7 +1048,9 @@ class LocalCodingAgent:
                         stream_events=stream_events,
                     )
                 elif tool_result is None:
-                    # Legacy path — DEFAULT (after 02:22 revert). Streaming preserved.
+                    # Legacy fallback — only reached when LATTI_USE_STATE_MACHINE=0.
+                    # Will be removed once the typed loop has soaked across all
+                    # tool kinds in production.
                     for update in execute_tool_streaming(
                         self.tool_registry,
                         tool_call.name,
