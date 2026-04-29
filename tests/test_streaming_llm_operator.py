@@ -108,6 +108,21 @@ def test_assembles_tool_calls_from_streaming_events(fresh_state):
     assert tc['arguments'] == {'path': '/tmp/x'}
 
 
+def test_assembles_tool_calls_from_real_tool_call_delta_shape(fresh_state):
+    events = [
+        _Event('tool_call_delta', tool_call_id='tc1', tool_name='read_file', arguments_delta='{"path":'),
+        _Event('tool_call_delta', tool_call_index=0, arguments_delta='"/tmp/y"}'),
+        _Event('message_stop', finish_reason='tool_calls'),
+    ]
+    op = StreamingLLMOperator(_StreamingStubClient(events))
+    a = Action(kind='llm_call', payload={'messages': [{'role': 'user', 'content': 'do it'}]})
+    obs = op.execute(a, fresh_state)
+    assert len(obs.payload['tool_calls']) == 1
+    tc = obs.payload['tool_calls'][0]
+    assert tc['name'] == 'read_file'
+    assert tc['arguments'] == {'path': '/tmp/y'}
+
+
 def test_returns_partial_content_on_stream_failure(fresh_state):
     class BoomClient:
         config = _StubConfig()

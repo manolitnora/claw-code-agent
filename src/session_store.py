@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +66,7 @@ class StoredAgentSession:
     file_history: tuple[JSONDict, ...]
     budget_state: JSONDict
     plugin_state: JSONDict
+    typed_state: JSONDict = field(default_factory=dict)
     scratchpad_directory: str | None = None
 
 
@@ -105,6 +106,11 @@ def load_agent_session(session_id: str, directory: Path | None = None) -> Stored
         plugin_state=(
             dict(data.get('plugin_state', {}))
             if isinstance(data.get('plugin_state'), dict)
+            else {}
+        ),
+        typed_state=(
+            dict(data.get('typed_state', {}))
+            if isinstance(data.get('typed_state'), dict)
             else {}
         ),
         scratchpad_directory=(

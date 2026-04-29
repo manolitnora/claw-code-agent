@@ -6,10 +6,12 @@ from pathlib import Path
 import pytest
 
 from src.agent_runtime import LocalCodingAgent
-from src.agent_state_machine import Goal, MemoryRecord, Task
+from src.agent_state_machine import Goal, MemoryRecord, State, Task
+from src.agent_types import AgentRunResult
 from src.agent_types import (
     AgentPermissions, AgentRuntimeConfig, ModelConfig, ModelPricing,
 )
+from src.session_store import StoredAgentSession
 from src.state_machine_goals import GoalRegistry, TaskTracker
 from src.state_machine_memory import LattiMemoryStore
 
@@ -59,3 +61,88 @@ def test_lazy_construction_does_not_fire_at_init(tmp_path):
     assert agent._sm_memory is None
     assert agent._sm_goals is None
     assert agent._sm_tasks is None
+
+
+def test_run_rebinds_typed_state_before_prompt_execution(tmp_path, monkeypatch):
+    agent = _make_agent(tmp_path)
+    agent._sm_state = State.fresh(session_id='stale_session', available_tools=('old_tool',))
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(agent, '_check_rotation_gate', lambda result: None)
+    monkeypatch.setattr(agent, '_accumulate_usage', lambda result: None)
+    monkeypatch.setattr(agent, '_finalize_managed_agent', lambda result: None)
+
+    def fake_run_prompt(prompt, *, base_session, session_id, scratchpad_directory, existing_file_history):
+        seen['prompt'] = prompt
+        seen['state'] = agent._sm_state
+        return AgentRunResult(
+            final_output='ok',
+            turns=0,
+            tool_calls=0,
+            transcript=(),
+            session_id=session_id,
+            scratchpad_directory=str(scratchpad_directory) if scratchpad_directory else None,
+        )
+
+    monkeypatch.setattr(agent, '_run_prompt', fake_run_prompt)
+
+    result = agent.run('hello from test')
+
+    assert result.session_id is not None
+    assert seen['prompt'] == 'hello from test'
+    assert isinstance(seen['state'], State)
+    assert seen['state'].session_id == result.session_id
+    assert seen['state'].session_id != 'stale_session'
+    assert 'read_file' in seen['state'].available_tools
+
+
+def test_resume_rebinds_typed_state_before_prompt_execution(tmp_path, monkeypatch):
+    agent = _make_agent(tmp_path)
+    agent._sm_state = State.fresh(session_id='stale_session', available_tools=('old_tool',))
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(agent, '_accumulate_usage', lambda result: None)
+    monkeypatch.setattr(agent, '_finalize_managed_agent', lambda result: None)
+
+    def fake_run_prompt(prompt, *, base_session, session_id, scratchpad_directory, existing_file_history):
+        seen['prompt'] = prompt
+        seen['state'] = agent._sm_state
+        seen['base_session'] = base_session
+        return AgentRunResult(
+            final_output='ok',
+            turns=0,
+            tool_calls=0,
+            transcript=(),
+            session_id=session_id,
+            scratchpad_directory=str(scratchpad_directory) if scratchpad_directory else None,
+        )
+
+    monkeypatch.setattr(agent, '_run_prompt', fake_run_prompt)
+
+    stored = StoredAgentSession(
+        session_id='stored_session_123',
+        model_config={},
+        runtime_config={},
+        system_prompt_parts=('system',),
+        user_context={},
+        system_context={},
+        messages=(),
+        turns=0,
+        tool_calls=0,
+        usage={},
+        total_cost_usd=0.0,
+        file_history=(),
+        budget_state={},
+        plugin_state={},
+        scratchpad_directory=None,
+    )
+
+    result = agent.resume('continue', stored)
+
+    assert result.session_id == 'stored_session_123'
+    assert seen['prompt'] == 'continue'
+    assert seen['base_session'] is not None
+    assert isinstance(seen['state'], State)
+    assert seen['state'].session_id == 'stored_session_123'
+    assert seen['state'].session_id != 'stale_session'
+    assert 'read_file' in seen['state'].available_tools

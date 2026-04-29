@@ -54,6 +54,7 @@ from .session_store import (
     load_session,
 )
 from .setup import run_setup
+from .tui_supervisor import run_background_turn, save_worker_result
 from .tool_pool import assemble_tool_pool
 from .tools import execute_tool, get_tool, get_tools, render_tool_index
 
@@ -308,7 +309,12 @@ def _run_background_worker(args: argparse.Namespace) -> int:
     session_path = None
     try:
         agent = _build_agent(args)
-        result = agent.run(args.prompt)
+        result = _execute_agent_turn(
+            agent,
+            args.prompt,
+            active_session_id=getattr(args, 'resume_session_id', None),
+        )
+        save_worker_result(background_runtime.root, args.background_id, result)
         _print_agent_result(result, show_transcript=args.show_transcript)
         exit_code = 0
         stop_reason = result.stop_reason or 'completed'
@@ -501,6 +507,112 @@ def _print_agent_result(result, *, show_transcript: bool, chat_mode: bool = Fals
             print(message.get('content', ''))
 
 
+def _execute_agent_turn(
+    agent: LocalCodingAgent,
+    prompt: str,
+    *,
+    active_session_id: str | None,
+    info_callback: Callable[[str], None] | None = None,
+    thinking_start: Callable[[], None] | None = None,
+    thinking_clear: Callable[[], None] | None = None,
+) -> AgentRunResult:
+    def _invoke(action: Callable[[], AgentRunResult]) -> AgentRunResult:
+        if thinking_start is not None:
+            thinking_start()
+        try:
+            return action()
+        finally:
+            if thinking_clear is not None:
+                thinking_clear()
+
+    if active_session_id:
+        try:
+            stored_session = load_agent_session(
+                active_session_id,
+                directory=agent.runtime_config.session_directory,
+            )
+            _stored_cost = getattr(stored_session, 'total_cost_usd', 0.0)
+            import os as _os_m
+            _raw = _os_m.environ.get('LATTI_SAFETY_MAX_COST_USD', '').strip()
+            try:
+                _safety_ceiling = float(_raw) if _raw else 0.0
+            except ValueError:
+                _safety_ceiling = 0.0
+            _stored_usage = getattr(stored_session, 'usage', None) or {}
+            _stored_input_tokens = (
+                _stored_usage.get('input_tokens', 0) if isinstance(_stored_usage, dict)
+                else getattr(_stored_usage, 'input_tokens', 0)
+            )
+            _context_limit = 192_000
+            _over_budget = False
+            _over_context = _stored_input_tokens > _context_limit
+            if _over_budget:
+                if info_callback is not None:
+                    info_callback(
+                        f'session {active_session_id[:12]} reset — '
+                        f'cost ${_stored_cost:.2f} >= ${_safety_ceiling:.2f} '
+                        '— starting fresh'
+                    )
+                _persist_last_session(None)
+                return _invoke(lambda: agent.run(prompt))
+            if _over_context:
+                from .session_compact import compact_stored_session
+
+                compacted, dropped = compact_stored_session(stored_session)
+                if info_callback is not None and dropped > 0:
+                    new_tokens = int(compacted.usage.get('input_tokens', 0) or 0)
+                    info_callback(
+                        f'session {active_session_id[:12]} compacted — '
+                        f'{_stored_input_tokens:,} tok → {new_tokens:,} tok '
+                        f'({dropped} earliest messages elided; continuity preserved)'
+                    )
+                return _invoke(lambda: agent.resume(prompt, compacted))
+            return _invoke(lambda: agent.resume(prompt, stored_session))
+        except (FileNotFoundError, KeyError, json.JSONDecodeError):
+            _persist_last_session(None)
+            return _invoke(lambda: agent.run(prompt))
+    return _invoke(lambda: agent.run(prompt))
+
+
+def _build_background_chat_worker_runner(
+    args: argparse.Namespace,
+) -> Callable[[str, str | None], AgentRunResult]:
+    background_runtime = BackgroundSessionRuntime()
+    forwarded_args: list[str] = []
+    _append_agent_forwarded_args(forwarded_args, args, include_backend=True)
+    forwarded_args.extend(['--background-root', str(background_runtime.root)])
+    process_cwd = Path(__file__).resolve().parent.parent
+    workspace_cwd = Path(args.cwd).resolve()
+
+    def _worker_runner(prompt: str, resume_session_id: str | None) -> AgentRunResult:
+        background_id = background_runtime.create_id()
+        command = build_background_worker_command(
+            background_id=background_id,
+            prompt=prompt,
+            forwarded_args=forwarded_args,
+            resume_session_id=resume_session_id,
+        )
+        final_record, result = run_background_turn(
+            background_runtime,
+            launch_worker=lambda: background_runtime.launch(
+                command,
+                prompt=prompt,
+                workspace_cwd=workspace_cwd,
+                model=args.model,
+                mode='chat',
+                background_id=background_id,
+                process_cwd=process_cwd,
+            ),
+        )
+        if final_record.session_id and not result.session_id:
+            result = replace(result, session_id=final_record.session_id)
+        if final_record.session_path and not result.session_path:
+            result = replace(result, session_path=final_record.session_path)
+        return result
+
+    return _worker_runner
+
+
 def _run_agent_chat_loop(
     agent: LocalCodingAgent,
     *,
@@ -510,6 +622,7 @@ def _run_agent_chat_loop(
     input_func: Callable[[str], str] = input,
     output_func: Callable[[str], None] = print,
     result_printer: Callable[..., None] = _print_agent_result,
+    worker_runner: Callable[[str, str | None], AgentRunResult] | None = None,
 ) -> int:
     active_session_id = resume_session_id
     first_prompt = initial_prompt
@@ -664,96 +777,23 @@ def _run_agent_chat_loop(
                 output_func('chat_ended=user_exit')
             return 0
 
-        if active_session_id:
+        if worker_runner is not None:
+            if use_tui:
+                tui.thinking_start()
             try:
-                stored_session = load_agent_session(
-                    active_session_id,
-                    directory=agent.runtime_config.session_directory,
-                )
-                # Guard: if the stored session is over budget OR too large
-                # for the model's context, don't resume — start fresh.
-                _stored_cost = getattr(stored_session, 'total_cost_usd', 0.0)
-                # 2026-04-26 — wall removal (second pass; the first edit didn't
-                # persist cleanly). Env var opts in a session-resume cost cap.
-                # 0 / unset = no wall; resume always proceeds regardless of
-                # accumulated cost. Prior hardcoded $10 cap was forcing session
-                # resets on every high-cost session (latti hit this at $122).
-                import os as _os_m
-                _raw = _os_m.environ.get('LATTI_SAFETY_MAX_COST_USD', '').strip()
-                try:
-                    _safety_ceiling = float(_raw) if _raw else 0.0
-                except ValueError:
-                    _safety_ceiling = 0.0
-                _stored_usage = getattr(stored_session, 'usage', None) or {}
-                _stored_input_tokens = (
-                    _stored_usage.get('input_tokens', 0) if isinstance(_stored_usage, dict)
-                    else getattr(_stored_usage, 'input_tokens', 0)
-                )
-                # 200K is the Claude Sonnet context limit. Leave 8K headroom
-                # for the new-turn message + tool preambles. Raised from 180K
-                # 2026-04-20 — most fresh-starts were context pressure, not
-                # cost. Extra room = more turns before forced-fresh.
-                _context_limit = 192_000
-                # Disable budget-based session reset
-                _over_budget = False
-                _over_context = _stored_input_tokens > _context_limit
-                # Cost overruns drop the session — they signal a real
-                # hard limit the user has to approve spending past.
-                # Context overruns DO NOT drop the session anymore —
-                # they trigger in-place compaction that preserves turn
-                # count, cost accounting, and the tail of the conversation.
-                # The old forced-fresh path was the dominant cause of
-                # "Latti forgets what was talked about" (S120 bug report).
-                if _over_budget:
-                    if use_tui:
-                        tui.info(
-                            f'session {active_session_id[:12]} reset — '
-                            f'cost ${_stored_cost:.2f} >= ${_safety_ceiling:.2f} '
-                            f'— starting fresh'
-                        )
-                    active_session_id = None
-                    stored_session = None
-                    _persist_last_session(None)
-                    if use_tui:
-                        tui.thinking_start()
-                    result = agent.run(user_input)
-                    if use_tui:
-                        tui.thinking_clear()
-                elif _over_context:
-                    from .session_compact import compact_stored_session
-                    compacted, dropped = compact_stored_session(stored_session)
-                    if use_tui and dropped > 0:
-                        new_tokens = int(compacted.usage.get('input_tokens', 0) or 0)
-                        tui.info(
-                            f'session {active_session_id[:12]} compacted — '
-                            f'{_stored_input_tokens:,} tok → {new_tokens:,} tok '
-                            f'({dropped} earliest messages elided; continuity preserved)'
-                        )
-                    if use_tui:
-                        tui.thinking_start()
-                    result = agent.resume(user_input, compacted)
-                    if use_tui:
-                        tui.thinking_clear()
-                else:
-                    if use_tui:
-                        tui.thinking_start()
-                    result = agent.resume(user_input, stored_session)
-                    if use_tui:
-                        tui.thinking_clear()
-            except (FileNotFoundError, KeyError, json.JSONDecodeError):
-                # Session file missing or corrupt — start fresh
-                active_session_id = None
-                if use_tui:
-                    tui.thinking_start()
-                result = agent.run(user_input)
+                result = worker_runner(user_input, active_session_id)
+            finally:
                 if use_tui:
                     tui.thinking_clear()
         else:
-            if use_tui:
-                tui.thinking_start()
-            result = agent.run(user_input)
-            if use_tui:
-                tui.thinking_clear()
+            result = _execute_agent_turn(
+                agent,
+                user_input,
+                active_session_id=active_session_id,
+                info_callback=tui.info if use_tui else None,
+                thinking_start=tui.thinking_start if use_tui else None,
+                thinking_clear=tui.thinking_clear if use_tui else None,
+            )
         # Display result — call result_printer with chat_mode if supported
         try:
             result_printer(result, show_transcript=show_transcript, chat_mode=True)
@@ -1284,6 +1324,7 @@ def build_parser() -> argparse.ArgumentParser:
     background_worker_parser = subparsers.add_parser('agent-bg-worker', help=argparse.SUPPRESS)
     background_worker_parser.add_argument('background_id')
     background_worker_parser.add_argument('prompt')
+    background_worker_parser.add_argument('--resume-session-id')
     background_worker_parser.add_argument('--background-root', required=True)
     background_worker_parser.add_argument('--max-turns', type=int, default=12)
     background_worker_parser.add_argument('--show-transcript', action='store_true')
@@ -1316,6 +1357,7 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_worker_parser = daemon_subparsers.add_parser('worker', help=argparse.SUPPRESS)
     daemon_worker_parser.add_argument('background_id')
     daemon_worker_parser.add_argument('prompt')
+    daemon_worker_parser.add_argument('--resume-session-id')
     daemon_worker_parser.add_argument('--background-root', required=True)
     daemon_worker_parser.add_argument('--max-turns', type=int, default=12)
     daemon_worker_parser.add_argument('--show-transcript', action='store_true')
@@ -1972,11 +2014,19 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass  # boot hook failure is non-fatal
         agent = _build_agent(args)
+        worker_runner = None
+        if (
+            sys.stdin.isatty()
+            and sys.stdout.isatty()
+            and os.environ.get('LATTI_USE_CHAT_SUPERVISOR', '1') != '0'
+        ):
+            worker_runner = _build_background_chat_worker_runner(args)
         return _run_agent_chat_loop(
             agent,
             initial_prompt=args.prompt,
             resume_session_id=args.resume_session_id,
             show_transcript=args.show_transcript,
+            worker_runner=worker_runner,
         )
     if args.command == 'agent-resume':
         agent, stored_session = _build_resumed_agent(args)

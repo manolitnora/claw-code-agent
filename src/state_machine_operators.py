@@ -235,6 +235,64 @@ class ToolCallOperator:
         )
 
 
+class DelegateAgentOperator:
+    """Typed operator for the runtime-managed ``delegate_agent`` tool.
+
+    ``delegate_agent`` is registered in the tool schema but intentionally uses a
+    placeholder handler in ``agent_tools`` because the real execution path lives
+    on ``LocalCodingAgent``. This operator keeps that special runtime behavior
+    while moving the action itself onto the typed runner.
+    """
+
+    def __init__(self, delegate_callable: Callable[[dict[str, Any]], Any]) -> None:
+        self._delegate_callable = delegate_callable
+
+    @property
+    def kind(self) -> ActionKind:
+        return 'tool_call'
+
+    def can_handle(self, action: Action) -> bool:
+        return (
+            action.kind == 'tool_call'
+            and action.payload.get('tool_name') == 'delegate_agent'
+        )
+
+    def execute(self, action: Action, state: State) -> Observation:
+        del state
+        arguments = action.payload.get('arguments') or {}
+        if not isinstance(arguments, dict):
+            return Observation(
+                action_id=action.id,
+                kind='error',
+                payload={'error': 'delegate_agent arguments must be an object'},
+            )
+
+        try:
+            result = self._delegate_callable(arguments)
+        except Exception as exc:
+            return Observation(
+                action_id=action.id,
+                kind='error',
+                payload={
+                    'tool_name': 'delegate_agent',
+                    'error': f'delegate_agent raised: {exc!r}',
+                    'metadata': {'action': 'delegate_agent'},
+                },
+            )
+
+        return Observation(
+            action_id=action.id,
+            kind='success' if result.ok else 'error',
+            payload={
+                'tool_name': result.name,
+                'ok': result.ok,
+                'content': result.content,
+                'metadata': dict(result.metadata),
+                'streamed_segments': [],
+            },
+        )
+
+
 class RealLLMOperator:
     """Real LLM operator wrapping ``OpenAICompatClient``.
 
@@ -246,6 +304,7 @@ class RealLLMOperator:
         Action(kind='llm_call', payload={
             'messages': [{'role': ..., 'content': ...}, ...],
             'tools':    [{...openai tool spec...}, ...],     # optional
+            'output_schema': {...},                          # optional
             'model_override': '<model id>',                   # optional
         })
 
@@ -276,6 +335,7 @@ class RealLLMOperator:
         del state
         messages = action.payload.get('messages')
         tools = action.payload.get('tools') or []
+        output_schema = action.payload.get('output_schema')
         model_override = action.payload.get('model_override') or self._model_override
 
         if not isinstance(messages, list) or not messages:
@@ -285,9 +345,11 @@ class RealLLMOperator:
             )
 
         try:
+            kwargs: dict[str, Any] = {'model_override': model_override}
+            if output_schema is not None:
+                kwargs['output_schema'] = output_schema
             turn = self._client.complete(
-                messages=messages, tools=tools,
-                model_override=model_override,
+                messages=messages, tools=tools, **kwargs,
             )
         except Exception as exc:
             return Observation(
@@ -313,6 +375,8 @@ class RealLLMOperator:
                 'content': turn.content,
                 'tool_calls': tool_calls_serialized,
                 'finish_reason': turn.finish_reason,
+                'thinking': turn.thinking,
+                'usage': turn.usage.to_dict(),
             },
             cost_usd=cost,
             tokens=turn.usage.total_tokens if turn.usage else None,
@@ -335,10 +399,12 @@ class StreamingLLMOperator:
         *,
         model_override: str | None = None,
         token_callback: Callable[[str, Action], None] | None = None,
+        event_callback: Callable[[Any, Action], None] | None = None,
     ) -> None:
         self._client = client
         self._model_override = model_override
         self._token_callback = token_callback
+        self._event_callback = event_callback
 
     @property
     def kind(self) -> ActionKind:
@@ -353,6 +419,7 @@ class StreamingLLMOperator:
         del state
         messages = action.payload.get('messages')
         tools = action.payload.get('tools') or []
+        output_schema = action.payload.get('output_schema')
         model_override = action.payload.get('model_override') or self._model_override
 
         if not isinstance(messages, list) or not messages:
@@ -365,14 +432,22 @@ class StreamingLLMOperator:
         tool_calls_raw: list[dict[str, Any]] = []
         finish_reason: str | None = None
         usage_total = None
+        thinking_text = ''
 
         try:
+            kwargs: dict[str, Any] = {'model_override': model_override}
+            if output_schema is not None:
+                kwargs['output_schema'] = output_schema
             stream = self._client.stream(
-                messages=messages, tools=tools,
-                model_override=model_override,
+                messages=messages, tools=tools, **kwargs,
             )
             for event in stream:
                 etype = getattr(event, 'type', None)
+                if self._event_callback is not None:
+                    try:
+                        self._event_callback(event, action)
+                    except Exception:
+                        pass
                 if etype == 'content_delta':
                     delta = getattr(event, 'delta', '')
                     if delta:
@@ -382,14 +457,37 @@ class StreamingLLMOperator:
                                 self._token_callback(delta, action)
                             except Exception:
                                 pass
+                elif etype == 'thinking_delta':
+                    delta = getattr(event, 'delta', '')
+                    if delta:
+                        thinking_text += delta
                 elif etype == 'tool_call_start':
                     tc_id = getattr(event, 'tool_call_id', None)
                     name = getattr(event, 'tool_name', None)
                     tool_calls_raw.append({'id': tc_id, 'name': name, 'arguments_json': ''})
                 elif etype == 'tool_call_delta':
                     delta = getattr(event, 'delta', '')
-                    if tool_calls_raw and delta:
-                        tool_calls_raw[-1]['arguments_json'] += delta
+                    if not isinstance(delta, str) or not delta:
+                        delta = getattr(event, 'arguments_delta', '')
+                    index = getattr(event, 'tool_call_index', None)
+                    tc_id = getattr(event, 'tool_call_id', None)
+                    name = getattr(event, 'tool_name', None)
+
+                    if isinstance(index, int):
+                        while len(tool_calls_raw) <= index:
+                            tool_calls_raw.append({'id': None, 'name': None, 'arguments_json': ''})
+                        target = tool_calls_raw[index]
+                    else:
+                        if not tool_calls_raw:
+                            tool_calls_raw.append({'id': None, 'name': None, 'arguments_json': ''})
+                        target = tool_calls_raw[-1]
+
+                    if tc_id is not None:
+                        target['id'] = tc_id
+                    if name is not None:
+                        target['name'] = name
+                    if isinstance(delta, str) and delta:
+                        target['arguments_json'] += delta
                 elif etype == 'message_stop':
                     finish_reason = getattr(event, 'finish_reason', None)
                 elif etype == 'usage':
@@ -425,6 +523,8 @@ class StreamingLLMOperator:
                 'content': ''.join(accumulated),
                 'tool_calls': parsed_tool_calls,
                 'finish_reason': finish_reason,
+                'thinking': thinking_text,
+                'usage': usage_total.to_dict() if usage_total is not None else {},
             },
             cost_usd=cost,
             tokens=usage_total.total_tokens if usage_total else None,

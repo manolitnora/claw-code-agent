@@ -266,6 +266,7 @@ class State:
     beliefs: BeliefState = field(default_factory=BeliefState)
     open_tasks: tuple[Task, ...] = ()
     available_tools: tuple[str, ...] = ()
+    runtime: JSONDict = field(default_factory=dict)
     budget_remaining_usd: float = 0.0
     last_observation: Observation | None = None
 
@@ -274,6 +275,18 @@ class State:
         return cls(turn_id=_new_id('turn'), session_id=session_id,
                    available_tools=available_tools, budget_remaining_usd=budget_usd)
 
+    def with_runtime(self, runtime: JSONDict) -> State:
+        return State(
+            turn_id=self.turn_id,
+            session_id=self.session_id,
+            beliefs=self.beliefs,
+            open_tasks=self.open_tasks,
+            available_tools=self.available_tools,
+            runtime=dict(runtime),
+            budget_remaining_usd=self.budget_remaining_usd,
+            last_observation=self.last_observation,
+        )
+
     def next_turn(self, observation: Observation, budget_decrement_usd: float = 0.0) -> State:
         return State(
             turn_id=_new_id('turn'),
@@ -281,6 +294,7 @@ class State:
             beliefs=self.beliefs,
             open_tasks=self.open_tasks,
             available_tools=self.available_tools,
+            runtime=dict(self.runtime),
             budget_remaining_usd=max(0.0, self.budget_remaining_usd - budget_decrement_usd),
             last_observation=observation,
         )
@@ -290,8 +304,145 @@ class State:
                 'beliefs': self.beliefs.to_dict(),
                 'open_tasks': [t.to_dict() for t in self.open_tasks],
                 'available_tools': list(self.available_tools),
+                'runtime': dict(self.runtime),
                 'budget_remaining_usd': self.budget_remaining_usd,
                 'last_observation': self.last_observation.to_dict() if self.last_observation else None}
+
+
+def _fact_from_dict(payload: Any) -> Fact | None:
+    if not isinstance(payload, dict):
+        return None
+    claim = payload.get('claim')
+    confidence = payload.get('confidence')
+    source = payload.get('source')
+    if not isinstance(claim, str) or not isinstance(source, str):
+        return None
+    try:
+        confidence_value = float(confidence)
+    except (TypeError, ValueError):
+        confidence_value = 0.0
+    evidence_ref = payload.get('evidence_ref')
+    return Fact(
+        claim=claim,
+        confidence=confidence_value,
+        source=source,  # type: ignore[arg-type]
+        evidence_ref=evidence_ref if isinstance(evidence_ref, str) else None,
+    )
+
+
+def _belief_state_from_dict(payload: Any) -> BeliefState:
+    if not isinstance(payload, dict):
+        return BeliefState()
+    facts = tuple(
+        fact
+        for item in payload.get('facts', [])
+        if (fact := _fact_from_dict(item)) is not None
+    )
+    unresolved = tuple(
+        item for item in payload.get('unresolved_questions', [])
+        if isinstance(item, str)
+    )
+    return BeliefState(facts=facts, unresolved_questions=unresolved)
+
+
+def _task_from_dict(payload: Any) -> Task | None:
+    if not isinstance(payload, dict):
+        return None
+    task_id = payload.get('id')
+    goal_id = payload.get('goal_id')
+    description = payload.get('description')
+    if not isinstance(task_id, str) or not isinstance(goal_id, str) or not isinstance(description, str):
+        return None
+    parent_task = payload.get('parent_task')
+    status = payload.get('status', 'pending')
+    created_at = payload.get('created_at', _now())
+    completed_at = payload.get('completed_at')
+    try:
+        created_at_value = float(created_at)
+    except (TypeError, ValueError):
+        created_at_value = _now()
+    completed_at_value: float | None
+    try:
+        completed_at_value = float(completed_at) if completed_at is not None else None
+    except (TypeError, ValueError):
+        completed_at_value = None
+    return Task(
+        id=task_id,
+        goal_id=goal_id,
+        description=description,
+        parent_task=parent_task if isinstance(parent_task, str) else None,
+        status=status,  # type: ignore[arg-type]
+        created_at=created_at_value,
+        completed_at=completed_at_value,
+    )
+
+
+def observation_from_dict(payload: Any) -> Observation | None:
+    if not isinstance(payload, dict):
+        return None
+    action_id = payload.get('action_id')
+    kind = payload.get('kind')
+    if not isinstance(action_id, str) or not isinstance(kind, str):
+        return None
+    raw_payload = payload.get('payload')
+    observed_at = payload.get('observed_at', _now())
+    cost_usd = payload.get('cost_usd', 0.0)
+    tokens = payload.get('tokens')
+    try:
+        observed_at_value = float(observed_at)
+    except (TypeError, ValueError):
+        observed_at_value = _now()
+    try:
+        cost_usd_value = float(cost_usd)
+    except (TypeError, ValueError):
+        cost_usd_value = 0.0
+    token_value: int | None
+    try:
+        token_value = int(tokens) if tokens is not None else None
+    except (TypeError, ValueError):
+        token_value = None
+    return Observation(
+        action_id=action_id,
+        kind=kind,  # type: ignore[arg-type]
+        payload=dict(raw_payload) if isinstance(raw_payload, dict) else {},
+        observed_at=observed_at_value,
+        cost_usd=cost_usd_value,
+        tokens=token_value,
+    )
+
+
+def state_from_dict(payload: Any) -> State | None:
+    if not isinstance(payload, dict):
+        return None
+    turn_id = payload.get('turn_id')
+    session_id = payload.get('session_id')
+    if not isinstance(turn_id, str) or not isinstance(session_id, str):
+        return None
+    budget_remaining_usd = payload.get('budget_remaining_usd', 0.0)
+    try:
+        budget_value = float(budget_remaining_usd)
+    except (TypeError, ValueError):
+        budget_value = 0.0
+    available_tools = tuple(
+        item for item in payload.get('available_tools', [])
+        if isinstance(item, str)
+    )
+    runtime = dict(payload.get('runtime', {})) if isinstance(payload.get('runtime'), dict) else {}
+    open_tasks = tuple(
+        task
+        for item in payload.get('open_tasks', [])
+        if (task := _task_from_dict(item)) is not None
+    )
+    return State(
+        turn_id=turn_id,
+        session_id=session_id,
+        beliefs=_belief_state_from_dict(payload.get('beliefs')),
+        open_tasks=open_tasks,
+        available_tools=available_tools,
+        runtime=runtime,
+        budget_remaining_usd=budget_value,
+        last_observation=observation_from_dict(payload.get('last_observation')),
+    )
 
 
 # ---- Operator protocol -----------------------------------------------------

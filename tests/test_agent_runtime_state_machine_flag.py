@@ -18,9 +18,12 @@ from src.agent_tools import build_tool_context, default_tool_registry
 from src.agent_types import (
     AgentPermissions,
     AgentRuntimeConfig,
+    AssistantTurn,
     ModelConfig,
     ModelPricing,
+    StreamEvent,
     ToolExecutionResult,
+    UsageStats,
 )
 from src.state_machine_runner import StateMachineRunner
 
@@ -113,6 +116,39 @@ def test_flag_on_dispatch_executes_real_read_file(tmp_path, monkeypatch):
     assert agent._sm_runner is not None
     assert isinstance(agent._sm_runner, StateMachineRunner)
     assert agent._sm_state is not None
+
+
+def test_flag_on_dispatch_executes_delegate_agent_via_typed_operator(tmp_path, monkeypatch):
+    monkeypatch.setenv('LATTI_USE_STATE_MACHINE', '1')
+    agent = _make_agent(tmp_path)
+
+    def fake_delegate(arguments):
+        assert arguments == {'prompt': 'delegate this'}
+        return ToolExecutionResult(
+            name='delegate_agent',
+            ok=True,
+            content='Delegated child completed.',
+            metadata={
+                'action': 'delegate_agent',
+                'child_session_id': 'child_session_123',
+            },
+        )
+
+    monkeypatch.setattr(agent, '_execute_delegate_agent', fake_delegate)
+
+    result = agent._dispatch_via_state_machine(
+        _ToolCallStub('delegate_agent', {'prompt': 'delegate this'})
+    )
+
+    assert result.ok is True
+    assert result.name == 'delegate_agent'
+    assert result.content == 'Delegated child completed.'
+    assert result.metadata['action'] == 'delegate_agent'
+    assert result.metadata['child_session_id'] == 'child_session_123'
+    assert agent._sm_state is not None
+    assert agent._sm_state.last_observation is not None
+    assert agent._sm_state.last_observation.payload['tool_name'] == 'delegate_agent'
+    assert agent._sm_state.last_observation.payload['metadata']['action'] == 'delegate_agent'
 
 
 def test_flag_on_dispatch_advances_state_across_calls(tmp_path, monkeypatch):
@@ -229,3 +265,70 @@ def test_flag_on_logs_policy_decision_when_runner_preinjected(tmp_path, monkeypa
     rec = json.loads(content.splitlines()[0])
     assert rec['decision']['chose']['payload']['tool_name'] == 'read_file'
     assert rec['observation_kind'] == 'success'
+
+
+def test_flag_on_run_records_non_streaming_llm_observation(tmp_path, monkeypatch):
+    monkeypatch.setenv('LATTI_USE_STATE_MACHINE', '1')
+    agent = _make_agent(tmp_path)
+    monkeypatch.setattr(agent, '_check_rotation_gate', lambda result: None)
+
+    def fake_complete(messages, tools, *, output_schema=None, model_override=None):
+        return AssistantTurn(
+            content='hello from typed llm',
+            finish_reason='stop',
+            usage=UsageStats(input_tokens=4, output_tokens=2),
+        )
+
+    monkeypatch.setattr(agent.client, 'complete', fake_complete)
+
+    result = agent.run('say hello')
+
+    assert result.final_output == 'hello from typed llm'
+    assert agent._sm_state is not None
+    assert agent._sm_state.last_observation is not None
+    assert agent._sm_state.last_observation.payload['content'] == 'hello from typed llm'
+    assert agent._sm_state.last_observation.payload['finish_reason'] == 'stop'
+
+
+def test_flag_on_run_records_streaming_llm_observation(tmp_path, monkeypatch):
+    monkeypatch.setenv('LATTI_USE_STATE_MACHINE', '1')
+    runtime_config = AgentRuntimeConfig(
+        cwd=tmp_path,
+        stream_model_responses=True,
+        permissions=AgentPermissions(
+            allow_file_write=True, allow_shell_commands=False,
+        ),
+    )
+    model_config = ModelConfig(
+        model='gpt-4o-mini',
+        api_key='test-key',
+        base_url='http://localhost:0/unused',
+        pricing=ModelPricing(),
+    )
+    agent = LocalCodingAgent(
+        model_config=model_config,
+        runtime_config=runtime_config,
+    )
+    monkeypatch.setattr(agent, '_check_rotation_gate', lambda result: None)
+
+    events = [
+        StreamEvent(type='message_start'),
+        StreamEvent(type='content_delta', delta='typed '),
+        StreamEvent(type='content_delta', delta='stream'),
+        StreamEvent(type='message_stop', finish_reason='stop'),
+        StreamEvent(type='usage', usage=UsageStats(input_tokens=5, output_tokens=2)),
+    ]
+
+    def fake_stream(messages, tools, *, output_schema=None, model_override=None):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(agent.client, 'stream', fake_stream)
+
+    result = agent.run('stream hello')
+
+    assert result.final_output == 'typed stream'
+    assert agent._sm_state is not None
+    assert agent._sm_state.last_observation is not None
+    assert agent._sm_state.last_observation.payload['content'] == 'typed stream'
+    assert agent._sm_state.last_observation.payload['finish_reason'] == 'stop'

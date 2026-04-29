@@ -319,7 +319,10 @@ class StateMachineRunner:
         try:
             self._decision_log_path.parent.mkdir(parents=True, exist_ok=True)
             with self._decision_log_path.open('a', encoding='utf-8') as f:
-                f.write(json.dumps(record) + '\n')
+                # default=str: any non-JSON-serializable payload value (e.g.
+                # OutputSchemaConfig from agent_runtime's response_schema feature)
+                # is coerced to its repr instead of crashing the dispatch.
+                f.write(json.dumps(record, default=str) + '\n')
         except OSError:
             # Logging must never break the loop. Silently drop on FS error.
             pass

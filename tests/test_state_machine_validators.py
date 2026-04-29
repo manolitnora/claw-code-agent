@@ -106,6 +106,25 @@ def test_observation_shape_validator_blocks_on_action_id_mismatch(fresh_state, t
                for c in v['checks'])
 
 
+def test_observation_shape_validator_accepts_real_llm_payload_shape():
+    v = ObservationShapeValidator()
+    a = Action(kind='llm_call', payload={'messages': [{'role': 'user', 'content': 'hi'}]})
+    obs = Observation(
+        action_id=a.id,
+        kind='success',
+        payload={
+            'content': 'hello',
+            'tool_calls': [],
+            'finish_reason': 'stop',
+        },
+    )
+
+    result = v.validate(a, obs)
+
+    assert result.passed is True
+    assert result.severity == 'info'
+
+
 # ---- BudgetValidator semantics ---------------------------------------------
 
 def test_budget_validator_blocks_when_observation_exceeds_per_step_cap(fresh_state, tmp_path):

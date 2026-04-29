@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.main import _build_runtime_config, _build_agent, _run_agent_chat_loop, build_parser
+from src.agent_types import AgentRunResult
 
 
 class FakeHTTPResponse:
@@ -129,6 +130,67 @@ class MainCliTests(unittest.TestCase):
         self.assertEqual(recorded_results, ['First chat reply.', 'Second chat reply.'])
         self.assertIn('# Agent Chat', recorded_lines)
         self.assertIn('chat_ended=user_exit', recorded_lines)
+
+    def test_agent_chat_loop_can_use_worker_runner(self) -> None:
+        recorded_results: list[str] = []
+        recorded_lines: list[str] = []
+        worker_calls: list[tuple[str, str | None]] = []
+        prompts = iter(['Second prompt', '/exit'])
+
+        def _input(prompt: str) -> str:
+            return next(prompts)
+
+        def _output(line: str) -> None:
+            recorded_lines.append(line)
+
+        def _result_printer(result, *, show_transcript: bool) -> None:  # noqa: ANN001
+            recorded_results.append(result.final_output)
+
+        def _worker_runner(prompt: str, resume_session_id: str | None):
+            worker_calls.append((prompt, resume_session_id))
+            session_id = resume_session_id or 'worker_session_1'
+            return AgentRunResult(
+                final_output=f'worker:{prompt}',
+                turns=1,
+                tool_calls=0,
+                transcript=(),
+                session_id=session_id,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            parser = build_parser()
+            args = parser.parse_args(
+                [
+                    'agent-chat',
+                    'First prompt',
+                    '--model',
+                    'test-model',
+                    '--cwd',
+                    str(workspace),
+                ]
+            )
+            agent = _build_agent(args)
+            exit_code = _run_agent_chat_loop(
+                agent,
+                initial_prompt=args.prompt,
+                resume_session_id=None,
+                show_transcript=False,
+                input_func=_input,
+                output_func=_output,
+                result_printer=_result_printer,
+                worker_runner=_worker_runner,
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            worker_calls,
+            [('First prompt', None), ('Second prompt', 'worker_session_1')],
+        )
+        self.assertEqual(
+            recorded_results,
+            ['worker:First prompt', 'worker:Second prompt'],
+        )
 
     def test_parser_accepts_remote_runtime_commands(self) -> None:
         parser = build_parser()

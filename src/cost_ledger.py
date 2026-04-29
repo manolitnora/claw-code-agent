@@ -70,10 +70,8 @@ def log_api_call(
 ) -> None:
     """Log an API call to the cost ledger."""
     ledger_path = Path.home() / '.latti' / 'memory' / 'cost-ledger.jsonl'
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    
     cost_usd = calculate_cost_usd(model, usage)
-    
+
     entry = {
         'timestamp': datetime.now(timezone.utc).isoformat(),
         'model': model,
@@ -85,9 +83,14 @@ def log_api_call(
         'cost_usd': round(cost_usd, 6),
         'session_id': session_id,
     }
-    
-    with open(ledger_path, 'a') as f:
-        f.write(json.dumps(entry) + '\n')
+
+    try:
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(ledger_path, 'a') as f:
+            f.write(json.dumps(entry) + '\n')
+    except OSError:
+        # Cost logging must never break the chat loop.
+        return
 
 
 def get_session_cost(session_id: str | None = None) -> dict[str, Any]:

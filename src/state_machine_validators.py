@@ -58,10 +58,14 @@ class ObservationShapeValidator:
                 if not has_one:
                     all_passed = False
             elif action.kind == 'llm_call':
-                has_completion = 'completion' in observation.payload
+                expected_any = {'completion', 'content', 'tool_calls', 'finish_reason'}
+                has_completion = bool(set(observation.payload.keys()) & expected_any)
                 checks.append(ValidationCheck(
                     name='llm_call_has_completion', passed=has_completion,
-                    evidence='completion key present' if has_completion else f'missing; got keys={sorted(observation.payload.keys())}',
+                    evidence=(
+                        f'expected any of {sorted(expected_any)}; '
+                        f'got keys={sorted(observation.payload.keys())}'
+                    ),
                 ))
                 if not has_completion:
                     all_passed = False

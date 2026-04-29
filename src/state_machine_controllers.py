@@ -139,3 +139,63 @@ class HaltController:
 
     def pick(self, state: State, goal: Goal | None = None) -> PolicyDecision | None:
         return None
+
+
+class RuntimeLoopController:
+    """Controller for the chat/runtime outer loop.
+
+    Reads lightweight runtime context from ``State.runtime`` and decides the
+    next concrete action for the agent loop. This is the first pass that makes
+    the outer loop state-machine-driven instead of a plain Python branch nest.
+    """
+
+    def __init__(self, name: str = 'runtime_loop') -> None:
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def pick(self, state: State, goal: Goal | None = None) -> PolicyDecision | None:
+        del goal
+        runtime = state.runtime if isinstance(state.runtime, dict) else {}
+
+        if runtime.get('final_output') is not None:
+            return None
+
+        pending_tool_calls = runtime.get('pending_tool_calls')
+        if isinstance(pending_tool_calls, list) and pending_tool_calls:
+            first = pending_tool_calls[0]
+            if not isinstance(first, dict):
+                return None
+            tool_name = first.get('name')
+            arguments = first.get('arguments')
+            if not isinstance(tool_name, str) or not isinstance(arguments, dict):
+                return None
+            return PolicyDecision(
+                at_state_turn_id=state.turn_id,
+                chose=Action(
+                    kind='tool_call',
+                    payload={
+                        'tool_name': tool_name,
+                        'arguments': arguments,
+                    },
+                ),
+                rationale='rule_fired: runtime_execute_pending_tool_call',
+                decided_by='rule',
+                confidence=1.0,
+            )
+
+        if runtime.get('awaiting_model'):
+            payload = runtime.get('next_llm_action')
+            if not isinstance(payload, dict):
+                return None
+            return PolicyDecision(
+                at_state_turn_id=state.turn_id,
+                chose=Action(kind='llm_call', payload=payload),
+                rationale='rule_fired: runtime_query_model',
+                decided_by='rule',
+                confidence=1.0,
+            )
+
+        return None
