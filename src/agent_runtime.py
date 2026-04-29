@@ -124,6 +124,13 @@ class LocalCodingAgent:
     resume_source_session_id: str | None = field(default=None, init=False, repr=False)
     model_router: ModelRouter | None = field(default=None, init=False, repr=False)
     scar_router: ScarRouter | None = field(default=None, init=False, repr=False)
+    # State-machine bridge — lazy, opt-in via LATTI_USE_STATE_MACHINE=1.
+    # Default off: zero overhead. See ~/.latti/STATE_MACHINE.md.
+    _sm_runner: 'object | None' = field(default=None, init=False, repr=False)
+    _sm_state: 'object | None' = field(default=None, init=False, repr=False)
+    _sm_memory: 'object | None' = field(default=None, init=False, repr=False)
+    _sm_goals: 'object | None' = field(default=None, init=False, repr=False)
+    _sm_tasks: 'object | None' = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.tool_registry is None:
@@ -1024,6 +1031,16 @@ class LocalCodingAgent:
                 if tool_call.name == 'delegate_agent':
                     if tool_result is None:
                         tool_result = self._execute_delegate_agent(tool_call.arguments)
+                elif tool_result is None and os.environ.get('LATTI_USE_STATE_MACHINE') == '1':
+                    # State-machine bridge — opt-in. Streaming deltas are mirrored
+                    # to session + stream_events when context is passed. See
+                    # STATE_MACHINE.md and Verra Wiki/Wiki/infrastructure/typed-loop-bridge.md.
+                    tool_result = self._dispatch_via_state_machine(
+                        tool_call,
+                        session=session,
+                        tool_message_index=tool_message_index,
+                        stream_events=stream_events,
+                    )
                 elif tool_result is None:
                     for update in execute_tool_streaming(
                         self.tool_registry,
@@ -1415,6 +1432,155 @@ class LocalCodingAgent:
         if thinking_text:
             _tui.thinking_block(thinking_text, token_count=usage.reasoning_tokens or 0)
         return turn, tuple(events)
+
+    def state_machine_memory(self):
+        """Lazy-construct and return a LattiMemoryStore for ~/.latti/memory.
+
+        Returns None when ~/.latti is unavailable. Used by code paths that
+        want to persist scars/SOPs/lessons via the typed MemoryRecord schema.
+        """
+        if self._sm_memory is not None:
+            return self._sm_memory
+        try:
+            from pathlib import Path as _P
+            from .state_machine_memory import LattiMemoryStore
+            path = _P.home() / '.latti' / 'memory'
+            self._sm_memory = LattiMemoryStore(path)
+        except Exception:
+            return None
+        return self._sm_memory
+
+    def state_machine_goals(self):
+        """Lazy-construct and return a GoalRegistry for ~/.latti/goals/."""
+        if self._sm_goals is not None:
+            return self._sm_goals
+        try:
+            from pathlib import Path as _P
+            from .state_machine_goals import GoalRegistry
+            self._sm_goals = GoalRegistry(_P.home() / '.latti' / 'goals')
+        except Exception:
+            return None
+        return self._sm_goals
+
+    def state_machine_tasks(self):
+        """Lazy-construct and return a TaskTracker for ~/.latti/goals/."""
+        if self._sm_tasks is not None:
+            return self._sm_tasks
+        try:
+            from pathlib import Path as _P
+            from .state_machine_goals import TaskTracker
+            self._sm_tasks = TaskTracker(_P.home() / '.latti' / 'goals')
+        except Exception:
+            return None
+        return self._sm_tasks
+
+    def _dispatch_via_state_machine(
+        self,
+        tool_call,
+        session=None,
+        tool_message_index: int | None = None,
+        stream_events: list | None = None,
+    ) -> 'ToolExecutionResult':
+        """Flag-gated state-machine dispatch path.
+
+        Active only when ``LATTI_USE_STATE_MACHINE=1``. Routes a single tool
+        call through StateMachineRunner using ToolCallOperator, logs a
+        PolicyDecision, and converts the resulting Observation back to the
+        ToolExecutionResult shape that downstream code expects.
+
+        Streaming preservation: when ``session``, ``tool_message_index``, and
+        ``stream_events`` are passed, deltas are mirrored to the legacy
+        session/event surface in real time instead of batched. Without them
+        (e.g. in tests), deltas are still collected in observation.payload.
+        """
+        # Local imports keep flag-off path free of state-machine dependencies.
+        from .agent_state_machine import Action, State
+        from .state_machine_operators import ToolCallOperator
+        from .state_machine_runner import StateMachineRunner
+        from .state_machine_validators import (
+            NonEmptyContentValidator,
+            ObservationShapeValidator,
+        )
+        from .state_machine_evaluators import BudgetExhaustionEvaluator
+        from .agent_types import ToolExecutionResult
+
+        if self._sm_runner is None:
+            self._sm_runner = StateMachineRunner(
+                operators=[ToolCallOperator(self.tool_registry, self.tool_context)],
+                validators=[
+                    ObservationShapeValidator(),
+                    NonEmptyContentValidator(),
+                ],
+                evaluators=[BudgetExhaustionEvaluator()],
+            )
+        if self._sm_state is None:
+            self._sm_state = State.fresh(
+                session_id=self.active_session_id or 'sm_unknown',
+                budget_usd=0.0,
+                available_tools=tuple(self.tool_registry.keys()) if self.tool_registry else (),
+            )
+
+        # Wire delta callback for this dispatch only — mirrors the legacy
+        # streaming path so the TUI sees live deltas instead of batched output.
+        if session is not None and tool_message_index is not None and stream_events is not None:
+            def _on_delta(content: str, stream: 'str | None', _action) -> None:
+                session.append_tool_delta(
+                    tool_message_index, content,
+                    metadata={'last_stream': stream or 'tool'},
+                )
+                stream_events.append({
+                    'type': 'tool_delta',
+                    'tool_name': tool_call.name,
+                    'tool_call_id': tool_call.id,
+                    'message_id': session.messages[tool_message_index].message_id,
+                    'stream': stream,
+                    'delta': content,
+                })
+            for op in self._sm_runner.operators:
+                if isinstance(op, ToolCallOperator):
+                    op._delta_callback = _on_delta
+                    break
+        else:
+            # Reset callback on any pre-existing ToolCallOperator (clean state)
+            for op in self._sm_runner.operators:
+                if isinstance(op, ToolCallOperator):
+                    op._delta_callback = None
+                    break
+
+        action = Action(
+            kind='tool_call',
+            payload={
+                'tool_name': tool_call.name,
+                'arguments': dict(tool_call.arguments or {}),
+            },
+        )
+        try:
+            observation, new_state = self._sm_runner.run_one_step(
+                self._sm_state, action,
+                rationale=f'agent_runtime dispatch: {tool_call.name}',
+            )
+        finally:
+            # Always clear the callback after dispatch — bounded state mutation.
+            for op in self._sm_runner.operators:
+                if isinstance(op, ToolCallOperator):
+                    op._delta_callback = None
+                    break
+        self._sm_state = new_state
+
+        # Convert Observation → ToolExecutionResult
+        if observation.kind == 'success':
+            return ToolExecutionResult(
+                name=observation.payload.get('tool_name', tool_call.name),
+                ok=True,
+                content=observation.payload.get('content', ''),
+                metadata=observation.payload.get('metadata', {}) or {},
+            )
+        return ToolExecutionResult(
+            name=observation.payload.get('tool_name', tool_call.name),
+            ok=False,
+            content=observation.payload.get('content') or observation.payload.get('error', 'state-machine dispatch failed'),
+            metadata=observation.payload.get('metadata', {}) or {},
+        )
 
     @staticmethod
     def _tool_call_detail(tool_call) -> str:
