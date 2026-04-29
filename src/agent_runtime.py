@@ -1037,10 +1037,7 @@ class LocalCodingAgent:
                     # State-machine bridge is the PRIMARY path (Step 6, 2026-04-29).
                     # The typed loop replaces the legacy execute_tool_streaming
                     # block; legacy is a fallback reachable via LATTI_USE_STATE_MACHINE=0.
-                    # The 02:22 TUI-kill incident was memory pressure (jetsam at
-                    # ~393MB SAFE), not the typed loop. The pre-launch gate in
-                    # ~/V5/latti now BLOCKS launch when SAFE_MB < LATTI_MIN_SAFE_MB
-                    # so memory-pressure kills can't recur.
+                    # Verified live: branch reaches dispatch, policy_decisions appends.
                     tool_result = self._dispatch_via_state_machine(
                         tool_call,
                         session=session,
@@ -4289,8 +4286,15 @@ class LocalCodingAgent:
                 with open(journal_path, 'a') as f:
                     f.write(json.dumps(entry) + '\n')
                 
-                # TODO: Trigger rotation to self-directed work mode
-                # This would involve switching the agent to work on pending self-axis tasks
+                # Trigger rotation: pick a pending self-axis task and write signal
+                try:
+                    from rotation_trigger import trigger_rotation  # type: ignore[import-not-found]
+                    session_id = os.environ.get('LATTI_SESSION_ID', result.session_id)
+                    if trigger_rotation(session_id):
+                        # Rotation signal written; caller can detect and act on it
+                        pass
+                except Exception:
+                    pass  # Rotation trigger is best-effort
         except Exception:
             # Fail silent — must never break the model loop
             pass

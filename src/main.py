@@ -511,8 +511,6 @@ def _run_agent_chat_loop(
     output_func: Callable[[str], None] = print,
     result_printer: Callable[..., None] = _print_agent_result,
 ) -> int:
-    from . import tui
-
     active_session_id = resume_session_id
     first_prompt = initial_prompt
 
@@ -537,16 +535,6 @@ def _run_agent_chat_loop(
         ).strip()
     except Exception:
         pass
-    tui.set_state(
-        model=agent.model_config.model,
-        cwd=str(agent.runtime_config.cwd),
-        branch=_git_branch,
-        context_pct=0,
-        permissions='full access' if agent.runtime_config.permissions.allow_destructive_shell_commands
-            else 'write + shell' if agent.runtime_config.permissions.allow_shell_commands
-            else 'write' if agent.runtime_config.permissions.allow_file_write
-            else 'read-only',
-    )
 
     cumulative_input_tokens = 0
     cumulative_output_tokens = 0
@@ -555,17 +543,31 @@ def _run_agent_chat_loop(
     # Use TUI only for an actual interactive terminal. Piped smoke tests and
     # non-TTY launches cannot support termios raw mode; fall back to plain
     # input/output instead of throwing termios.error at tui.prompt().
+    tui = None
+    tui_heal = None
     use_tui = (
         input_func is input
         and output_func is print
         and sys.stdin.isatty()
         and sys.stdout.isatty()
+        and os.environ.get('LATTI_DISABLE_TUI') != '1'
     )
 
     if use_tui:
+        from . import tui
         tui.banner()
         from . import tui_heal
         tui_heal.install()  # SIGWINCH flag + sanitizer + cursor_guard + heal()
+        tui.set_state(
+            model=agent.model_config.model,
+            cwd=str(agent.runtime_config.cwd),
+            branch=_git_branch,
+            context_pct=0,
+            permissions='full access' if agent.runtime_config.permissions.allow_destructive_shell_commands
+                else 'write + shell' if agent.runtime_config.permissions.allow_shell_commands
+                else 'write' if agent.runtime_config.permissions.allow_file_write
+                else 'read-only',
+        )
         if active_session_id:
             tui.info(f'resuming session {active_session_id[:12]}...')
         # Run boot actions visibly in the TUI (code, not model)
@@ -635,7 +637,7 @@ def _run_agent_chat_loop(
                     cumulative_cost=result.total_cost_usd if 'result' in dir() and result else 0.0,
                     cumulative_tokens=cumulative_input_tokens + cumulative_output_tokens,
                     use_tui=use_tui,
-                    tui=tui,
+                    tui=tui if use_tui else None,
                     tui_heal=tui_heal if use_tui else None,
                     output_func=output_func,
                 )
@@ -769,13 +771,14 @@ def _run_agent_chat_loop(
         # Use cumulative tokens as a better measure of conversation length
         conversation_tokens = cumulative_input_tokens + cumulative_output_tokens
         ctx_pct = min(99, int(conversation_tokens * 100 / 200_000)) if conversation_tokens > 0 else 0
-        tui.set_state(
-            context_pct=ctx_pct,
-            total_tokens=cumulative_input_tokens + cumulative_output_tokens,
-            turn_count=turn_count,
-            cost_usd=result.total_cost_usd,
-        )
-        tui.status_footer()  # redraw sticky footer with new data
+        if use_tui:
+            tui.set_state(
+                context_pct=ctx_pct,
+                total_tokens=cumulative_input_tokens + cumulative_output_tokens,
+                turn_count=turn_count,
+                cost_usd=result.total_cost_usd,
+            )
+            tui.status_footer()  # redraw sticky footer with new data
         # After rendering + persisting the turn, check memory again BEFORE
         # optional post-turn hooks (auto-speak, self-sculpt). On macOS under
         # compressor/wired pressure those hooks can push Python over jetsam;
