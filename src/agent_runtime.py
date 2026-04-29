@@ -125,7 +125,9 @@ class LocalCodingAgent:
     model_router: ModelRouter | None = field(default=None, init=False, repr=False)
     scar_router: ScarRouter | None = field(default=None, init=False, repr=False)
     # State-machine bridge — lazy, opt-in via LATTI_USE_STATE_MACHINE=1.
-    # Default off: zero overhead. See ~/.latti/STATE_MACHINE.md.
+    # Step 6 default-on briefly tried at 02:19 but reverted at 02:22 after
+    # TUI kills under memory pressure (~393MB available, below 500MB threshold).
+    # Re-attempt deferred to a session with RAM headroom.
     _sm_runner: 'object | None' = field(default=None, init=False, repr=False)
     _sm_state: 'object | None' = field(default=None, init=False, repr=False)
     _sm_memory: 'object | None' = field(default=None, init=False, repr=False)
@@ -1032,9 +1034,9 @@ class LocalCodingAgent:
                     if tool_result is None:
                         tool_result = self._execute_delegate_agent(tool_call.arguments)
                 elif tool_result is None and os.environ.get('LATTI_USE_STATE_MACHINE') == '1':
-                    # State-machine bridge — opt-in. Streaming deltas are mirrored
-                    # to session + stream_events when context is passed. See
-                    # STATE_MACHINE.md and Verra Wiki/Wiki/infrastructure/typed-loop-bridge.md.
+                    # State-machine bridge — REVERTED TO OPT-IN at 02:22 after TUI kills
+                    # under memory pressure. To re-enable typed loop: LATTI_USE_STATE_MACHINE=1.
+                    # Step 6 default-on flip backed out pending RAM-safe re-attempt.
                     tool_result = self._dispatch_via_state_machine(
                         tool_call,
                         session=session,
@@ -1042,6 +1044,7 @@ class LocalCodingAgent:
                         stream_events=stream_events,
                     )
                 elif tool_result is None:
+                    # Legacy path — DEFAULT (after 02:22 revert). Streaming preserved.
                     for update in execute_tool_streaming(
                         self.tool_registry,
                         tool_call.name,
@@ -1481,12 +1484,13 @@ class LocalCodingAgent:
         tool_message_index: int | None = None,
         stream_events: list | None = None,
     ) -> 'ToolExecutionResult':
-        """Flag-gated state-machine dispatch path.
+        """State-machine dispatch path. Default-on since 2026-04-29 (Step 6).
 
-        Active only when ``LATTI_USE_STATE_MACHINE=1``. Routes a single tool
-        call through StateMachineRunner using ToolCallOperator, logs a
-        PolicyDecision, and converts the resulting Observation back to the
-        ToolExecutionResult shape that downstream code expects.
+        Active when ``LATTI_USE_STATE_MACHINE != '0'`` (i.e. by default).
+        Routes a single tool call through StateMachineRunner using
+        ToolCallOperator, logs a PolicyDecision, and converts the resulting
+        Observation back to the ToolExecutionResult shape that downstream
+        code expects.
 
         Streaming preservation: when ``session``, ``tool_message_index``, and
         ``stream_events`` are passed, deltas are mirrored to the legacy
