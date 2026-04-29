@@ -6,7 +6,11 @@ Operator protocol is satisfied by a minimal stub.
 """
 from __future__ import annotations
 
-from src.agent_state_machine import (
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+
+from agent_state_machine import (
     Action,
     BeliefState,
     CONSTITUTIONAL_WALLS,
