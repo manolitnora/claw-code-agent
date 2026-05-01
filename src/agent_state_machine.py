@@ -25,6 +25,7 @@ def _now() -> float:
 
 
 TaskStatus = Literal['pending', 'in_progress', 'blocked', 'done', 'abandoned']
+GoalStatus = Literal['active', 'done', 'abandoned']
 ActionKind = Literal['tool_call', 'llm_call', 'validation', 'wait', 'ask_user']
 ObservationKind = Literal['success', 'error', 'partial', 'noop']
 Severity = Literal['info', 'warn', 'block']
@@ -43,6 +44,8 @@ class Goal:
     created_at: float = field(default_factory=_now)
     owner: str = 'user'
     parent_goal: str | None = None
+    status: GoalStatus = 'active'
+    completed_at: float | None = None
 
     @classmethod
     def new(cls, title: str, success_criteria: tuple[str, ...] = (), owner: str = 'user', parent_goal: str | None = None) -> Goal:
@@ -50,7 +53,8 @@ class Goal:
 
     def to_dict(self) -> JSONDict:
         return {'id': self.id, 'title': self.title, 'success_criteria': list(self.success_criteria),
-                'created_at': self.created_at, 'owner': self.owner, 'parent_goal': self.parent_goal}
+                'created_at': self.created_at, 'owner': self.owner, 'parent_goal': self.parent_goal,
+                'status': self.status, 'completed_at': self.completed_at}
 
 
 @dataclass(frozen=True)

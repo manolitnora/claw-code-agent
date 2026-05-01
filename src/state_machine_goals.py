@@ -20,7 +20,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-from src.agent_state_machine import Goal, Task, TaskStatus
+from src.agent_state_machine import Goal, GoalStatus, Task, TaskStatus
 
 
 class GoalRegistry:
@@ -41,8 +41,19 @@ class GoalRegistry:
             f.write(json.dumps(goal.to_dict()) + '\n')
         return goal
 
-    def list_all(self) -> list[Goal]:
-        """Return every Goal ever registered, in registration order."""
+    def _row_to_goal(self, d: dict) -> Goal:
+        return Goal(
+            id=d['id'], title=d['title'],
+            success_criteria=tuple(d.get('success_criteria', [])),
+            created_at=d.get('created_at', 0.0),
+            owner=d.get('owner', 'user'),
+            parent_goal=d.get('parent_goal'),
+            status=d.get('status', 'active'),
+            completed_at=d.get('completed_at'),
+        )
+
+    def _all_rows(self) -> list[Goal]:
+        """Every line on disk, parsed in order. Includes superseded rows."""
         if not self._goals_path.exists():
             return []
         out: list[Goal] = []
@@ -53,14 +64,20 @@ class GoalRegistry:
                 d = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            out.append(Goal(
-                id=d['id'], title=d['title'],
-                success_criteria=tuple(d.get('success_criteria', [])),
-                created_at=d.get('created_at', 0.0),
-                owner=d.get('owner', 'user'),
-                parent_goal=d.get('parent_goal'),
-            ))
+            out.append(self._row_to_goal(d))
         return out
+
+    def list_all(self) -> list[Goal]:
+        """Return current state of every Goal — latest line per id wins.
+
+        Append-only journal: a register followed by mark_done writes two lines
+        with the same id. The materialized view collapses to the most recent.
+        """
+        latest: dict[str, Goal] = {}
+        for g in self._all_rows():
+            latest[g.id] = g
+        # Preserve registration order via dict insertion order
+        return list(latest.values())
 
     def get(self, goal_id: str) -> Goal | None:
         for g in self.list_all():
@@ -70,6 +87,41 @@ class GoalRegistry:
 
     def children_of(self, parent_id: str) -> list[Goal]:
         return [g for g in self.list_all() if g.parent_goal == parent_id]
+
+    def mark_done(self, goal_id: str, completed_at: float | None = None) -> Goal | None:
+        """Append a new line marking the goal as done. Returns the new Goal
+        or None if the id doesn't exist."""
+        return self._set_status(goal_id, 'done', completed_at)
+
+    def mark_abandoned(self, goal_id: str) -> Goal | None:
+        return self._set_status(goal_id, 'abandoned', None)
+
+    def _set_status(self, goal_id: str, status: GoalStatus,
+                    completed_at: float | None) -> Goal | None:
+        current = self.get(goal_id)
+        if current is None:
+            return None
+        import time as _time
+        ts = completed_at if completed_at is not None else (
+            _time.time() if status == 'done' else None
+        )
+        new = Goal(
+            id=current.id, title=current.title,
+            success_criteria=current.success_criteria,
+            created_at=current.created_at,
+            owner=current.owner, parent_goal=current.parent_goal,
+            status=status, completed_at=ts,
+        )
+        with self._goals_path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(new.to_dict()) + '\n')
+        return new
+
+    def history(self, goal_id: str) -> list[Goal]:
+        """Every line ever written for this goal id, chronological."""
+        return [g for g in self._all_rows() if g.id == goal_id]
+
+    def list_active(self) -> list[Goal]:
+        return [g for g in self.list_all() if g.status == 'active']
 
 
 class TaskTracker:

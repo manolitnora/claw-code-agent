@@ -760,3 +760,49 @@ def test_substrate_shim_invokes_compiler_end_to_end(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'IDENTITY.md').exists()
+
+
+# ---- v1b: hallucinated record-id detection ---------------------------------
+
+def test_validate_record_ids_marks_hallucinated_only(tmp_path):
+    from src.identity_compile import validate_record_ids
+    valid = {'mem_real1', 'mem_real2'}
+    prose = 'I learned from mem_real1 and mem_fakehallucinated, also mem_real2.'
+    out = validate_record_ids(prose, valid)
+    assert 'mem_real1' in out and '~~mem_real1~~' not in out
+    assert 'mem_real2' in out and '~~mem_real2~~' not in out
+    assert '~~mem_fakehallucinated~~' in out
+
+
+def test_validate_record_ids_no_op_when_no_ids_cited(tmp_path):
+    from src.identity_compile import validate_record_ids
+    out = validate_record_ids('No IDs here, just prose.', {'mem_x'})
+    assert out == 'No IDs here, just prose.'
+
+
+def test_validate_record_ids_marks_all_when_substrate_empty(tmp_path):
+    from src.identity_compile import validate_record_ids
+    out = validate_record_ids('Cites mem_a and mem_b.', set())
+    assert '~~mem_a~~' in out
+    assert '~~mem_b~~' in out
+
+
+def test_compile_marks_hallucinated_ids_in_who_section(tmp_path):
+    from unittest.mock import patch
+    from src.identity_compile import compile_identity
+
+    mem = tmp_path / 'memory'
+    _write_typed_record(mem, 'scar', 'real', 'real body')
+
+    paths = _make_paths(tmp_path)
+
+    def fake_call(*, prompt, **kw):
+        # Return prose citing the real id AND a hallucinated one.
+        return 'I learned from mem_real and also from mem_imaginary999.'
+
+    with patch('src.identity_compile.call_ollama', side_effect=fake_call):
+        compile_identity(paths=paths, ollama_base='x', ollama_model='y', thin=False)
+
+    text = paths.identity.read_text()
+    assert 'mem_real' in text and '~~mem_real~~' not in text
+    assert '~~mem_imaginary999~~' in text

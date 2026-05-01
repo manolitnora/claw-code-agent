@@ -393,6 +393,27 @@ def synthesize_becoming(*, active_goals: list, decisions: list[MemoryRecord],
     )
 
 
+_RECORD_ID_RE = re.compile(r'\bmem_[a-z0-9]+\b')
+
+
+def validate_record_ids(prose: str, valid_ids: set[str]) -> str:
+    """Mark hallucinated `mem_*` IDs in LLM prose with strikethrough.
+
+    Spec §2 names this as a v1a-known limitation: gemma cites IDs that
+    don't exist in substrate (e.g. invented "Decision #23" or fabricated
+    `mem_xyz`). v1b makes them visible without trying to "fix" the prose
+    (which would require re-prompting and risk more hallucinations).
+
+    Wraps every cited `mem_X` not in valid_ids with `~~mem_X~~`. Valid
+    citations are unchanged.
+    """
+    def _maybe_mark(m: re.Match) -> str:
+        cited = m.group(0)
+        return cited if cited in valid_ids else f'~~{cited}~~'
+
+    return _RECORD_ID_RE.sub(_maybe_mark, prose)
+
+
 # ---------------------------------------------------------------------------
 # Task 10: top-level compile_identity orchestration
 # ---------------------------------------------------------------------------
@@ -543,6 +564,12 @@ def compile_identity(*, paths: 'IdentityPaths', ollama_base: str, ollama_model: 
                     decisions=[r for r in records if r.kind == 'decision'],
                     base_url=ollama_base, model=ollama_model,
                 )
+            # Mark hallucinated record IDs in LLM prose (v1b hardening).
+            valid_ids = {r.id for r in records}
+            if who_new is not None:
+                who_new = validate_record_ids(who_new, valid_ids)
+            if becoming_new is not None:
+                becoming_new = validate_record_ids(becoming_new, valid_ids)
 
         if substrate_changed and who_new is None:
             freshness = 'stale_no_ollama'
