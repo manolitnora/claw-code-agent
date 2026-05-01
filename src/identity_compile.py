@@ -27,6 +27,7 @@ from src.identity_templates import (
     PLACEHOLDER_NO_GOALS, PLACEHOLDER_NO_RECORDS,
     PLACEHOLDER_NO_SCARS, PLACEHOLDER_NO_LESSONS,
     HISTORY_HEADER, HISTORY_ENTRY,
+    WHO_I_AM_PROMPT, WHO_I_AM_BECOMING_PROMPT,
 )
 
 
@@ -314,3 +315,58 @@ def call_ollama(*, base_url: str, model: str, prompt: str, temperature: float,
     if not isinstance(response, str):
         return None
     return response.strip()
+
+
+OLLAMA_TIMEOUT = 90.0
+
+
+def _format_substrate_block(records: list[MemoryRecord]) -> str:
+    """Format records as a readable block for Ollama prompt."""
+    if not records:
+        return '(no typed records yet)'
+    lines = []
+    for r in records:
+        body_one_line = ' '.join(r.body.split())[:200]
+        lines.append(f'[{r.kind} {r.id}] {body_one_line}')
+    return '\n'.join(lines)
+
+
+def _format_goals_block(active_goals: list) -> str:
+    """Format active goals as a readable block for Ollama prompt."""
+    if not active_goals:
+        return '(no active goals)'
+    return '\n'.join(
+        f'- {g.title} ({g.status})'
+        + (f' — {", ".join(g.success_criteria)}' if g.success_criteria else '')
+        for g in active_goals
+    )
+
+
+def synthesize_who_i_am(*, records: list[MemoryRecord], active_goals: list,
+                        base_url: str, model: str) -> str | None:
+    """Call Ollama to synthesize the WHO I AM prose section.
+
+    Caps record context at the last 20.
+    """
+    capped = records[-20:]
+    prompt = WHO_I_AM_PROMPT.format(
+        substrate_block=_format_substrate_block(capped),
+        goals_block=_format_goals_block(active_goals),
+    )
+    return call_ollama(
+        base_url=base_url, model=model, prompt=prompt,
+        temperature=0.4, num_predict=250, timeout=OLLAMA_TIMEOUT,
+    )
+
+
+def synthesize_becoming(*, active_goals: list, decisions: list[MemoryRecord],
+                        base_url: str, model: str) -> str | None:
+    """Call Ollama to synthesize the BECOMING prose section."""
+    prompt = WHO_I_AM_BECOMING_PROMPT.format(
+        goals_block=_format_goals_block(active_goals),
+        decisions_block=_format_substrate_block(decisions[-5:]),
+    )
+    return call_ollama(
+        base_url=base_url, model=model, prompt=prompt,
+        temperature=0.4, num_predict=200, timeout=OLLAMA_TIMEOUT,
+    )

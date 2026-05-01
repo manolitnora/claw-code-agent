@@ -430,3 +430,61 @@ def test_ollama_call_returns_none_on_malformed_json(tmp_path):
             prompt='test', temperature=0.4, num_predict=10, timeout=5,
         )
     assert out is None
+
+
+def test_synthesize_who_i_am_uses_records(tmp_path):
+    from unittest.mock import patch
+    from src.identity_compile import synthesize_who_i_am
+    from src.agent_state_machine import MemoryRecord
+
+    records = [
+        MemoryRecord.new('scar', 'first scar body'),
+        MemoryRecord.new('lesson', 'a lesson'),
+    ]
+    captured_prompt = {}
+
+    def fake_call(*, base_url, model, prompt, temperature, num_predict, timeout):
+        captured_prompt['prompt'] = prompt
+        return 'I am Latti and I have learned things.'
+
+    with patch('src.identity_compile.call_ollama', side_effect=fake_call):
+        out = synthesize_who_i_am(records=records, active_goals=[],
+                                  base_url='http://localhost:11434',
+                                  model='gemma:latest')
+    assert out == 'I am Latti and I have learned things.'
+    assert 'first scar body' in captured_prompt['prompt']
+    assert 'a lesson' in captured_prompt['prompt']
+    assert 'anchor' in captured_prompt['prompt'].lower() or 'cite' in captured_prompt['prompt'].lower()
+
+
+def test_synthesize_who_i_am_returns_none_on_ollama_failure(tmp_path):
+    from unittest.mock import patch
+    from src.identity_compile import synthesize_who_i_am
+    from src.agent_state_machine import MemoryRecord
+
+    records = [MemoryRecord.new('scar', 'x')]
+    with patch('src.identity_compile.call_ollama', return_value=None):
+        out = synthesize_who_i_am(records=records, active_goals=[],
+                                  base_url='x', model='y')
+    assert out is None
+
+
+def test_synthesize_who_i_am_caps_records_at_20(tmp_path):
+    from unittest.mock import patch
+    from src.identity_compile import synthesize_who_i_am
+    from src.agent_state_machine import MemoryRecord
+
+    records = [MemoryRecord.new('scar', f'scar {i}') for i in range(50)]
+    captured = {}
+
+    def fake_call(*, prompt, **kw):
+        captured['prompt'] = prompt
+        return 'ok'
+
+    with patch('src.identity_compile.call_ollama', side_effect=fake_call):
+        synthesize_who_i_am(records=records, active_goals=[],
+                            base_url='x', model='y')
+
+    assert 'scar 49' in captured['prompt']
+    assert 'scar 30' in captured['prompt']
+    assert 'scar 29' not in captured['prompt']
