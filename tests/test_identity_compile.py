@@ -700,3 +700,34 @@ def test_main_swallows_exceptions_and_logs(tmp_path, monkeypatch):
     assert rc == 0
     assert log_path.is_file()
     assert 'boom' in log_path.read_text()
+
+
+def test_substrate_shim_invokes_compiler_end_to_end(tmp_path):
+    """Run a temporary shim as a real subprocess; verify it produces IDENTITY.md."""
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parent.parent
+
+    _write_typed_record(tmp_path / 'memory', 'scar', 'a', 'body')
+    shim_path = tmp_path / 'shim.py'
+    shim_path.write_text(
+        f'import sys\n'
+        f'sys.path.insert(0, {str(repo_root)!r})\n'
+        f'from src.identity_compile import main\n'
+        f'sys.exit(main())\n',
+        encoding='utf-8',
+    )
+    result = subprocess.run(
+        ['python3', str(shim_path),
+         '--memory-dir', str(tmp_path / 'memory'),
+         '--identity-out', str(tmp_path / 'IDENTITY.md'),
+         '--history-out', str(tmp_path / 'HISTORY.md'),
+         '--cursor-path', str(tmp_path / '.history-cursor'),
+         '--meta-path', str(tmp_path / '.identity-meta.json'),
+         '--log-path', str(tmp_path / 'identity-compile.log'),
+         '--goals-path', str(tmp_path / 'goals.jsonl'),
+         '--thin'],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'IDENTITY.md').exists()
