@@ -9,12 +9,19 @@ invisible to identity by design (~98% are operational debris).
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
+from collections import Counter
 from pathlib import Path
 from typing import Iterator
 
 from src.agent_state_machine import MemoryRecord
 from src.state_machine_memory import LattiMemoryStore
+from src.identity_templates import (
+    WHERE_SECTION, LEARNING_SECTION,
+    PLACEHOLDER_NO_GOALS, PLACEHOLDER_NO_RECORDS,
+    PLACEHOLDER_NO_SCARS, PLACEHOLDER_NO_LESSONS,
+)
 
 
 def load_typed_records(memory_dir: Path) -> Iterator[MemoryRecord]:
@@ -79,3 +86,44 @@ def _typed_record_paths(memory_dir: Path) -> list[Path]:
         except OSError:
             continue
     return paths
+
+
+def render_where_section(active_goals: list, records: list[MemoryRecord]) -> str:
+    """Render the templated WHERE section.
+
+    active_goals: any object with .title, .status, .success_criteria attrs.
+    records: typed MemoryRecords sorted oldest first.
+    """
+    if active_goals:
+        goal_lines = '\n'.join(
+            f'  - {g.title} — {g.status} — '
+            f'{g.success_criteria[0] if g.success_criteria else "no criteria"}'
+            for g in active_goals
+        )
+    else:
+        goal_lines = PLACEHOLDER_NO_GOALS
+
+    if records:
+        last = records[-1]
+        body_preview = last.body.replace('\n', ' ')[:80]
+        last_record = (
+            f'{last.kind} at {datetime.date.fromtimestamp(last.last_used).isoformat()} '
+            f'— {body_preview}'
+        )
+        cutoff = max(r.last_used for r in records) - 86400  # 24h
+        recent = [r for r in records if r.last_used >= cutoff]
+        if recent:
+            counts = Counter(r.kind for r in recent)
+            recent_focus = ', '.join(f'{k}×{v}' for k, v in counts.most_common(3))
+        else:
+            recent_focus = '(no records in last 24h)'
+    else:
+        last_record = PLACEHOLDER_NO_RECORDS
+        recent_focus = PLACEHOLDER_NO_RECORDS
+
+    return WHERE_SECTION.format(
+        n_goals=len(active_goals),
+        goal_lines=goal_lines,
+        last_record=last_record,
+        recent_focus=recent_focus,
+    )

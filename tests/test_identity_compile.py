@@ -130,3 +130,33 @@ def test_substrate_sha_ignores_legacy_files(tmp_path):
     _write_legacy_file(mem, 'AUDIT.md', 'audit junk')
     sha2 = compute_substrate_sha(mem)
     assert sha1 == sha2  # legacy file does not affect sha
+
+
+def test_where_section_with_no_records(tmp_path):
+    from src.identity_compile import render_where_section
+    out = render_where_section(active_goals=[], records=[])
+    assert '## where I am' in out
+    assert '0 typed records yet' in out
+    assert 'Active goals' in out
+    assert '(no active goals)' in out
+
+
+def test_where_section_with_goals_and_records(tmp_path):
+    from src.identity_compile import render_where_section
+    from src.identity_compile import load_typed_records_sorted
+
+    mem = tmp_path / 'memory'
+    _write_typed_record(mem, 'scar', 'a', 'first scar')
+    _write_typed_record(mem, 'lesson', 'b', 'a lesson')
+    records = load_typed_records_sorted(mem)
+
+    class FakeGoal:
+        title = 'directive compliance ≥ 0.7'
+        status = 'active'
+        success_criteria = ('5 consecutive sessions',)
+
+    out = render_where_section(active_goals=[FakeGoal()], records=records)
+    assert 'directive compliance' in out
+    assert 'active' in out
+    assert 'lesson' in out  # last record kind
+    assert '5 consecutive sessions' in out
