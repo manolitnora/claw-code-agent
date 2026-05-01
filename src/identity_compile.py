@@ -19,7 +19,7 @@ from typing import Iterator
 from src.agent_state_machine import MemoryRecord
 from src.state_machine_memory import LattiMemoryStore
 from src.identity_templates import (
-    WHERE_SECTION, LEARNING_SECTION,
+    WHERE_SECTION, LEARNING_SECTION, IDENTITY_MD,
     PLACEHOLDER_NO_GOALS, PLACEHOLDER_NO_RECORDS,
     PLACEHOLDER_NO_SCARS, PLACEHOLDER_NO_LESSONS,
 )
@@ -179,3 +179,35 @@ def preserve_becoming_if_user_edited(identity_path: Path,
     if identity_path.stat().st_mtime > last_compiled_at:
         return extract_becoming_section(identity_path)
     return None
+
+
+def render_identity_md(*, compiled_at: str, generation: int, substrate_sha: str,
+                       prose_freshness: str, who_section: str, where_section: str,
+                       learning_section: str, becoming_section: str) -> str:
+    """Assemble the complete IDENTITY.md text from rendered sections."""
+    return IDENTITY_MD.format(
+        compiled_at=compiled_at,
+        generation=generation,
+        substrate_sha=substrate_sha,
+        prose_freshness=prose_freshness,
+        who_section=who_section.strip(),
+        where_section=where_section.strip(),
+        learning_section=learning_section.strip(),
+        becoming_section=becoming_section.strip(),
+    )
+
+
+def write_identity_md_if_changed(target: Path, content: str,
+                                 prior_sha: str | None) -> bool:
+    """Atomically write content to target if its sha differs from prior_sha.
+
+    Returns True if a write occurred, False if skipped (sha matched).
+    """
+    new_sha = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    if prior_sha is not None and new_sha == prior_sha:
+        return False
+    tmp = target.with_suffix(target.suffix + '.tmp')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(content, encoding='utf-8')
+    tmp.replace(target)
+    return True

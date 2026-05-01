@@ -24,3 +24,24 @@ PLACEHOLDER_NO_GOALS = "  - (no active goals)"
 PLACEHOLDER_NO_RECORDS = "(0 typed records yet)"
 PLACEHOLDER_NO_SCARS = "  - (no scars recorded)"
 PLACEHOLDER_NO_LESSONS = "  - (no lessons recorded)"
+
+IDENTITY_MD = """---
+compiled_at: {compiled_at}
+generation: {generation}
+substrate_sha: {substrate_sha}
+prose_freshness: {prose_freshness}
+---
+
+## who I am
+{who_section}
+
+{where_section}
+{learning_section}
+## who I'm becoming
+<!-- BECOMING-SECTION-START -->
+{becoming_section}
+<!-- BECOMING-SECTION-END -->
+
+---
+*pointers: [HISTORY](HISTORY.md) · [memory](memory/) · [runtime](~/V5/claw-code-agent)*
+"""

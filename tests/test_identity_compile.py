@@ -254,3 +254,57 @@ def test_becoming_section_not_preserved_when_compile_is_newer(tmp_path):
     file_mtime = p.stat().st_mtime
     out = preserve_becoming_if_user_edited(p, last_compiled_at=file_mtime + 10)
     assert out is None
+
+
+def test_render_identity_md_assembles_all_sections(tmp_path):
+    from src.identity_compile import render_identity_md
+
+    out = render_identity_md(
+        compiled_at='2026-05-01T00:00:00Z',
+        generation=1,
+        substrate_sha='abc123',
+        prose_freshness='live',
+        who_section='I am Latti.',
+        where_section='## where I am\nstuff\n',
+        learning_section='## what I\'m learning\nstuff\n',
+        becoming_section='I want to grow.',
+    )
+    assert out.startswith('---\n')
+    assert 'compiled_at: 2026-05-01T00:00:00Z' in out
+    assert 'generation: 1' in out
+    assert 'substrate_sha: abc123' in out
+    assert 'prose_freshness: live' in out
+    assert '## who I am\nI am Latti.' in out
+    assert '## where I am' in out
+    assert '## what I\'m learning' in out
+    assert '<!-- BECOMING-SECTION-START -->' in out
+    assert 'I want to grow.' in out
+    assert '<!-- BECOMING-SECTION-END -->' in out
+    assert 'pointers' in out
+
+
+def test_atomic_write_sha_gated_skips_when_unchanged(tmp_path):
+    from src.identity_compile import write_identity_md_if_changed
+
+    target = tmp_path / 'IDENTITY.md'
+    content = '# hello\n'
+    written1 = write_identity_md_if_changed(target, content, prior_sha=None)
+    assert written1 is True
+    mtime1 = target.stat().st_mtime
+
+    import time; time.sleep(0.01)
+    import hashlib
+    sha = hashlib.sha256(content.encode()).hexdigest()
+    written2 = write_identity_md_if_changed(target, content, prior_sha=sha)
+    assert written2 is False
+    assert target.stat().st_mtime == mtime1
+
+
+def test_atomic_write_writes_when_content_differs(tmp_path):
+    from src.identity_compile import write_identity_md_if_changed
+
+    target = tmp_path / 'IDENTITY.md'
+    write_identity_md_if_changed(target, 'content v1\n', prior_sha=None)
+    written = write_identity_md_if_changed(target, 'content v2\n', prior_sha='wrong-sha')
+    assert written is True
+    assert target.read_text() == 'content v2\n'
