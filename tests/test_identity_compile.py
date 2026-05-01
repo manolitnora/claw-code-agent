@@ -73,3 +73,60 @@ def test_load_typed_records_empty_dir(tmp_path):
     from src.identity_compile import load_typed_records
     records = list(load_typed_records(tmp_path / 'nonexistent'))
     assert records == []
+
+
+def test_records_sorted_by_frontmatter_not_mtime(tmp_path):
+    """Sort key is frontmatter last_used, NOT filesystem mtime."""
+    import os
+    import time
+    from src.identity_compile import load_typed_records_sorted
+
+    mem = tmp_path / 'memory'
+    p_old = _write_typed_record(mem, 'scar', 'old', 'old', last_used='2026-04-01')
+    p_new = _write_typed_record(mem, 'scar', 'new', 'new', last_used='2026-05-01')
+    # Touch the OLD file so its mtime is newest
+    new_mtime = time.time()
+    os.utime(p_old, (new_mtime, new_mtime))
+    os.utime(p_new, (new_mtime - 86400, new_mtime - 86400))
+
+    records = list(load_typed_records_sorted(mem))
+    # Should be sorted oldest first by frontmatter date
+    assert [r.id for r in records] == ['mem_old', 'mem_new']
+
+
+def test_substrate_sha_stable_across_identical_compiles(tmp_path):
+    """Two consecutive sha computations on unchanged files → same sha."""
+    from src.identity_compile import compute_substrate_sha
+
+    mem = tmp_path / 'memory'
+    _write_typed_record(mem, 'scar', 'a', 'body a')
+    _write_typed_record(mem, 'lesson', 'b', 'body b')
+
+    sha1 = compute_substrate_sha(mem)
+    sha2 = compute_substrate_sha(mem)
+    assert sha1 == sha2
+    assert len(sha1) == 64  # sha256 hex
+
+
+def test_substrate_sha_changes_when_record_added(tmp_path):
+    from src.identity_compile import compute_substrate_sha
+
+    mem = tmp_path / 'memory'
+    _write_typed_record(mem, 'scar', 'a', 'body a')
+    sha1 = compute_substrate_sha(mem)
+
+    _write_typed_record(mem, 'lesson', 'b', 'body b')
+    sha2 = compute_substrate_sha(mem)
+    assert sha1 != sha2
+
+
+def test_substrate_sha_ignores_legacy_files(tmp_path):
+    from src.identity_compile import compute_substrate_sha
+
+    mem = tmp_path / 'memory'
+    _write_typed_record(mem, 'scar', 'a', 'body')
+    sha1 = compute_substrate_sha(mem)
+
+    _write_legacy_file(mem, 'AUDIT.md', 'audit junk')
+    sha2 = compute_substrate_sha(mem)
+    assert sha1 == sha2  # legacy file does not affect sha
