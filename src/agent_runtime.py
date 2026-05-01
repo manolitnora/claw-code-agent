@@ -6,6 +6,8 @@ import itertools
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 from uuid import uuid4
 
@@ -70,6 +72,41 @@ from .session_store import (
     usage_from_payload,
 )
 from .token_budget import calculate_token_budget, format_token_budget
+
+_LATTI_DIR = Path.home() / '.latti'
+_IDENTITY_SHIM = _LATTI_DIR / 'scripts' / 'identity_compile.py'
+
+
+def _maybe_spawn_identity_compiler() -> None:
+    """Fire-and-forget spawn of the identity compiler at session end.
+
+    Gated on LATTI_IDENTITY_COMPILE=1 so existing test fixtures that build
+    runtime instances don't accidentally trigger compiles. Any failure
+    (missing shim, Popen error) is silently swallowed — must NOT affect
+    the run() return value.
+    """
+    if os.environ.get('LATTI_IDENTITY_COMPILE') != '1':
+        return
+    if not _IDENTITY_SHIM.is_file():
+        return
+    try:
+        subprocess.Popen(
+            [
+                sys.executable, str(_IDENTITY_SHIM),
+                '--memory-dir',   str(_LATTI_DIR / 'memory'),
+                '--identity-out', str(_LATTI_DIR / 'IDENTITY.md'),
+                '--history-out',  str(_LATTI_DIR / 'HISTORY.md'),
+                '--cursor-path',  str(_LATTI_DIR / '.history-cursor'),
+                '--meta-path',    str(_LATTI_DIR / '.identity-meta.json'),
+                '--log-path',     str(_LATTI_DIR / 'identity-compile.log'),
+                '--goals-path',   str(_LATTI_DIR / 'goals.jsonl'),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, ValueError):
+        return
 
 
 @dataclass(frozen=True)
@@ -375,11 +412,12 @@ class LocalCodingAgent:
         )
         self._accumulate_usage(result)
         self._finalize_managed_agent(result)
-        
+
         # ROTATION GATE: Check if we should rotate to self-directed work
         # This is the decision point that prevents orbit
         self._check_rotation_gate(result)
-        
+
+        _maybe_spawn_identity_compiler()
         return result
 
     def _inject_claim_matches(self, prompt: str) -> None:
