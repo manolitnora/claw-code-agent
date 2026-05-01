@@ -647,3 +647,56 @@ def test_ensure_symlink_does_not_overwrite_regular_file(tmp_path):
     with pytest.raises(FileExistsError):
         ensure_symlink(link, target)
     assert link.read_text() == 'IMPORTANT REGULAR FILE'
+
+
+# ---------------------------------------------------------------------------
+# Task 12: CLI main + exception isolation
+# ---------------------------------------------------------------------------
+
+def test_main_runs_compile_identity(tmp_path, monkeypatch):
+    from src.identity_compile import main
+
+    _write_typed_record(tmp_path / 'memory', 'scar', 'a', 'body')
+
+    argv = [
+        'identity_compile',
+        '--memory-dir', str(tmp_path / 'memory'),
+        '--identity-out', str(tmp_path / 'IDENTITY.md'),
+        '--history-out', str(tmp_path / 'HISTORY.md'),
+        '--cursor-path', str(tmp_path / '.history-cursor'),
+        '--meta-path', str(tmp_path / '.identity-meta.json'),
+        '--log-path', str(tmp_path / 'identity-compile.log'),
+        '--goals-path', str(tmp_path / 'goals.jsonl'),
+        '--thin',
+    ]
+    monkeypatch.setattr('sys.argv', argv)
+
+    rc = main()
+    assert rc == 0
+    assert (tmp_path / 'IDENTITY.md').exists()
+
+
+def test_main_swallows_exceptions_and_logs(tmp_path, monkeypatch):
+    from src.identity_compile import main
+    from unittest.mock import patch
+
+    log_path = tmp_path / 'identity-compile.log'
+    argv = [
+        'identity_compile',
+        '--memory-dir', str(tmp_path / 'memory'),
+        '--identity-out', str(tmp_path / 'IDENTITY.md'),
+        '--history-out', str(tmp_path / 'HISTORY.md'),
+        '--cursor-path', str(tmp_path / '.history-cursor'),
+        '--meta-path', str(tmp_path / '.identity-meta.json'),
+        '--log-path', str(log_path),
+        '--goals-path', str(tmp_path / 'goals.jsonl'),
+    ]
+    monkeypatch.setattr('sys.argv', argv)
+
+    with patch('src.identity_compile.compile_identity',
+               side_effect=RuntimeError('boom')):
+        rc = main()
+
+    assert rc == 0
+    assert log_path.is_file()
+    assert 'boom' in log_path.read_text()

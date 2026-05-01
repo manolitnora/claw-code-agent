@@ -590,3 +590,67 @@ def ensure_symlink(link_path: Path, target_path: Path) -> None:
         )
 
     os.symlink(target_path, link_path)
+
+
+# ---------------------------------------------------------------------------
+# CLI main + exception isolation
+# ---------------------------------------------------------------------------
+
+import argparse
+import sys
+import traceback
+
+
+DEFAULT_OLLAMA_BASE = 'http://localhost:11434'
+DEFAULT_OLLAMA_MODEL = 'gemma:latest'
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description='Compile Latti IDENTITY.md + HISTORY.md')
+    p.add_argument('--memory-dir', required=True, type=Path)
+    p.add_argument('--identity-out', required=True, type=Path)
+    p.add_argument('--history-out', required=True, type=Path)
+    p.add_argument('--cursor-path', required=True, type=Path)
+    p.add_argument('--meta-path', required=True, type=Path)
+    p.add_argument('--log-path', required=True, type=Path)
+    p.add_argument('--goals-path', required=True, type=Path)
+    p.add_argument('--ollama-base', default=DEFAULT_OLLAMA_BASE)
+    p.add_argument('--ollama-model', default=DEFAULT_OLLAMA_MODEL)
+    p.add_argument('--thin', action='store_true',
+                   help='Skip Ollama; templated sections only')
+    return p
+
+
+def main() -> int:
+    """CLI entry. Always returns 0; failures are logged to --log-path."""
+    args = _build_arg_parser().parse_args()
+    paths = IdentityPaths(
+        memory_dir=args.memory_dir,
+        identity=args.identity_out,
+        history=args.history_out,
+        cursor=args.cursor_path,
+        meta=args.meta_path,
+        log=args.log_path,
+        goals=args.goals_path,
+    )
+    try:
+        compile_identity(
+            paths=paths,
+            ollama_base=args.ollama_base,
+            ollama_model=args.ollama_model,
+            thin=args.thin,
+        )
+    except Exception:
+        try:
+            args.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with args.log_path.open('a', encoding='utf-8') as f:
+                f.write(f'--- {_now_iso()} ---\n')
+                f.write(traceback.format_exc())
+                f.write('\n')
+        except Exception:
+            pass
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
