@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Iterator
@@ -143,3 +144,38 @@ def render_learning_section(scars: list[MemoryRecord],
     scar_lines = '\n'.join(_line(s) for s in scars) if scars else PLACEHOLDER_NO_SCARS
     lesson_lines = '\n'.join(_line(l) for l in lessons) if lessons else PLACEHOLDER_NO_LESSONS
     return LEARNING_SECTION.format(scar_lines=scar_lines, lesson_lines=lesson_lines)
+
+
+_BECOMING_RE = re.compile(
+    r'<!-- BECOMING-SECTION-START -->\n(?P<body>.*?)\n<!-- BECOMING-SECTION-END -->',
+    re.DOTALL,
+)
+
+
+def extract_becoming_section(identity_path: Path) -> str | None:
+    """Return the contents between BECOMING-SECTION markers, or None."""
+    if not identity_path.is_file():
+        return None
+    try:
+        text = identity_path.read_text(encoding='utf-8')
+    except OSError:
+        return None
+    m = _BECOMING_RE.search(text)
+    return m.group('body') if m else None
+
+
+def preserve_becoming_if_user_edited(identity_path: Path,
+                                     last_compiled_at: float | None) -> str | None:
+    """Return the existing becoming-section if the file is newer than last compile.
+
+    If last_compiled_at is None (no prior compile) → return None (no preservation
+    needed; daemon will write fresh).
+    Returns None if no preservation should happen — daemon is free to regenerate.
+    """
+    if last_compiled_at is None:
+        return None
+    if not identity_path.is_file():
+        return None
+    if identity_path.stat().st_mtime > last_compiled_at:
+        return extract_becoming_section(identity_path)
+    return None

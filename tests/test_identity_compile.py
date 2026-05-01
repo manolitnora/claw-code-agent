@@ -196,3 +196,61 @@ def test_learning_section_caps_at_5_scars_3_lessons(tmp_path):
     out = render_learning_section(scars=scars[-5:], lessons=lessons[-3:])
     assert out.count('  - scar body') == 5
     assert out.count('  - lesson body') == 3
+
+
+def test_becoming_section_extracted_from_existing_identity(tmp_path):
+    from src.identity_compile import extract_becoming_section
+
+    identity_path = tmp_path / 'IDENTITY.md'
+    identity_path.write_text(
+        '## who I am\nstuff\n\n'
+        '## who I\'m becoming\n'
+        '<!-- BECOMING-SECTION-START -->\n'
+        'I want to become better at noticing my own drift.\n'
+        '<!-- BECOMING-SECTION-END -->\n',
+        encoding='utf-8',
+    )
+    out = extract_becoming_section(identity_path)
+    assert out is not None
+    assert 'better at noticing my own drift' in out
+
+
+def test_becoming_section_extract_returns_none_if_no_file(tmp_path):
+    from src.identity_compile import extract_becoming_section
+    out = extract_becoming_section(tmp_path / 'missing.md')
+    assert out is None
+
+
+def test_becoming_section_extract_returns_none_if_no_markers(tmp_path):
+    from src.identity_compile import extract_becoming_section
+    p = tmp_path / 'IDENTITY.md'
+    p.write_text('## who I am\nbody\n', encoding='utf-8')
+    out = extract_becoming_section(p)
+    assert out is None
+
+
+def test_becoming_section_preserved_when_user_edited_after_compile(tmp_path):
+    from src.identity_compile import preserve_becoming_if_user_edited
+
+    p = tmp_path / 'IDENTITY.md'
+    p.write_text(
+        '## who I\'m becoming\n'
+        '<!-- BECOMING-SECTION-START -->\n'
+        'user edit\n'
+        '<!-- BECOMING-SECTION-END -->\n',
+        encoding='utf-8',
+    )
+    file_mtime = p.stat().st_mtime
+    out = preserve_becoming_if_user_edited(p, last_compiled_at=file_mtime - 10)
+    assert out is not None
+    assert 'user edit' in out
+
+
+def test_becoming_section_not_preserved_when_compile_is_newer(tmp_path):
+    from src.identity_compile import preserve_becoming_if_user_edited
+
+    p = tmp_path / 'IDENTITY.md'
+    p.write_text('## who I\'m becoming\n<!-- BECOMING-SECTION-START -->\nx\n<!-- BECOMING-SECTION-END -->\n', encoding='utf-8')
+    file_mtime = p.stat().st_mtime
+    out = preserve_becoming_if_user_edited(p, last_compiled_at=file_mtime + 10)
+    assert out is None
