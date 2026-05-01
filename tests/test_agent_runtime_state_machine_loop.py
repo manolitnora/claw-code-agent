@@ -353,3 +353,26 @@ def test_per_tool_eval_events_stashed_for_drain(tmp_path):
     # stash, not lost.
     verdicts = {(e['evaluator'], e['verdict']) for e in agent._pending_eval_events}
     assert ('consecutive_error', 'replan') in verdicts, verdicts
+
+
+def test_runner_evaluators_accessor_returns_wired_evaluators(tmp_path):
+    """Public runner.evaluators must return the wired evaluators in
+    registration order — guards against silent reorder/strip during refactor."""
+    from src.state_machine_evaluators import (
+        BudgetExhaustionEvaluator,
+        ConsecutiveErrorEvaluator,
+    )
+
+    agent = _make_agent(tmp_path)
+    runner = agent._ensure_state_machine_runner()
+
+    evaluators = runner.evaluators
+    assert isinstance(evaluators, tuple), type(evaluators)
+    names = [ev.name for ev in evaluators]
+    # Production wiring: BudgetExhaustionEvaluator + ConsecutiveErrorEvaluator
+    # in that order. If new evaluators land, this list extends — but the two
+    # must remain present and named-stable.
+    assert 'budget_exhaustion' in names, names
+    assert 'consecutive_error' in names, names
+    # Order must match registration so the helper's index-pairing stays sound.
+    assert names.index('budget_exhaustion') < names.index('consecutive_error'), names
