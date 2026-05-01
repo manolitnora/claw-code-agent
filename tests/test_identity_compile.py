@@ -371,3 +371,62 @@ def test_history_appends_only_new_records(tmp_path):
     assert appended3 == 1
     assert history.stat().st_size > body_size
     assert 'third' in history.read_text()
+
+
+def test_ollama_call_returns_response_text(tmp_path):
+    import urllib.error
+    from unittest.mock import patch
+    from src.identity_compile import call_ollama
+
+    fake_response = b'{"response": "hello world", "eval_count": 2}'
+    with patch('src.identity_compile._ollama_post', return_value=fake_response):
+        out = call_ollama(
+            base_url='http://localhost:11434',
+            model='gemma:latest',
+            prompt='test',
+            temperature=0.4,
+            num_predict=10,
+            timeout=5,
+        )
+    assert out == 'hello world'
+
+
+def test_ollama_call_returns_none_on_connection_error(tmp_path):
+    import urllib.error
+    from unittest.mock import patch
+    from src.identity_compile import call_ollama
+
+    def boom(*a, **kw):
+        raise urllib.error.URLError('connection refused')
+
+    with patch('src.identity_compile._ollama_post', side_effect=boom):
+        out = call_ollama(
+            base_url='http://localhost:11434', model='gemma:latest',
+            prompt='test', temperature=0.4, num_predict=10, timeout=5,
+        )
+    assert out is None
+
+
+def test_ollama_call_returns_none_on_timeout(tmp_path):
+    import socket
+    from unittest.mock import patch
+    from src.identity_compile import call_ollama
+
+    with patch('src.identity_compile._ollama_post', side_effect=socket.timeout()):
+        out = call_ollama(
+            base_url='http://localhost:11434', model='gemma:latest',
+            prompt='test', temperature=0.4, num_predict=10, timeout=5,
+        )
+    assert out is None
+
+
+def test_ollama_call_returns_none_on_malformed_json(tmp_path):
+    from unittest.mock import patch
+    from src.identity_compile import call_ollama
+
+    with patch('src.identity_compile._ollama_post', return_value=b'not json'):
+        out = call_ollama(
+            base_url='http://localhost:11434', model='gemma:latest',
+            prompt='test', temperature=0.4, num_predict=10, timeout=5,
+        )
+    assert out is None

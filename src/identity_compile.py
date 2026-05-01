@@ -13,6 +13,9 @@ import datetime
 import hashlib
 import json
 import re
+import socket
+import urllib.error
+import urllib.request
 from collections import Counter
 from pathlib import Path
 from typing import Iterator
@@ -266,3 +269,48 @@ def append_new_records_to_history(*, history_path: Path, cursor_path: Path,
         'last_id': new_records[-1].id,
     })
     return len(new_records)
+
+
+def _ollama_post(base_url: str, payload: bytes, timeout: float) -> bytes:
+    """Raw POST to /api/generate. Separate function so tests can patch it."""
+    req = urllib.request.Request(
+        f'{base_url.rstrip("/")}/api/generate',
+        data=payload, method='POST',
+        headers={'Content-Type': 'application/json'},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def call_ollama(*, base_url: str, model: str, prompt: str, temperature: float,
+                num_predict: int, timeout: float) -> str | None:
+    """Call Ollama generate, return response text or None on any failure.
+
+    Failure modes that return None:
+    - URL error (connection refused, DNS failure)
+    - socket.timeout
+    - non-200 HTTP
+    - malformed JSON
+    - missing 'response' key in JSON
+    """
+    payload = json.dumps({
+        'model': model,
+        'prompt': prompt,
+        'stream': False,
+        'options': {'temperature': temperature, 'num_predict': num_predict},
+    }).encode('utf-8')
+
+    try:
+        raw = _ollama_post(base_url, payload, timeout)
+    except (urllib.error.URLError, socket.timeout, OSError):
+        return None
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    response = data.get('response')
+    if not isinstance(response, str):
+        return None
+    return response.strip()
