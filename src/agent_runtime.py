@@ -1384,6 +1384,14 @@ class LocalCodingAgent:
             return []
         return _ObservableEventList(self.runtime_event_sink)
 
+    def _emit_runtime_event(self, event: dict[str, object]) -> None:
+        if self.runtime_event_sink is None:
+            return
+        try:
+            self.runtime_event_sink(dict(event))
+        except Exception:
+            pass
+
     def _build_state_machine_llm_action_payload(
         self,
         session: AgentSessionState,
@@ -1550,6 +1558,17 @@ class LocalCodingAgent:
                     return self._persist_session(session, result)
 
                 action = decision.chose
+                stream_events.append(
+                    {
+                        'type': 'state_machine_decision',
+                        'turn_index': turn_index,
+                        'state_turn_id': decision.at_state_turn_id,
+                        'action_kind': action.kind,
+                        'rationale': decision.rationale,
+                        'decided_by': decision.decided_by,
+                        'confidence': decision.confidence,
+                    }
+                )
 
                 if action.kind == 'llm_call':
                     model_override = (
@@ -4705,6 +4724,17 @@ class LocalCodingAgent:
             directory=self.runtime_config.session_directory,
         )
         self.last_session_path = str(path)
+        checkpoint_event = {
+            'type': 'session_checkpoint',
+            'session_id': result.session_id,
+            'session_path': self.last_session_path,
+            'typed_state_checkpointed': bool(stored.typed_state),
+            'typed_state_turn_id': stored.typed_state.get('turn_id'),
+            'turns': stored.turns,
+            'tool_calls': stored.tool_calls,
+        }
+        persist_events.append(checkpoint_event)
+        self._emit_runtime_event(checkpoint_event)
         return replace(
             result,
             session_path=self.last_session_path,

@@ -121,6 +121,48 @@ def test_outer_loop_defaults_to_state_machine_controller(
     ]
 
 
+def test_outer_loop_emits_decision_and_checkpoint_runtime_events(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv('LATTI_USE_STATE_MACHINE', raising=False)
+    monkeypatch.delenv('LATTI_USE_LEGACY_LOOP', raising=False)
+    agent = _make_agent(tmp_path)
+    _inject_runner(agent, tmp_path / 'loop_events.jsonl')
+    monkeypatch.setattr(agent, '_check_rotation_gate', lambda result: None)
+    captured_events: list[dict[str, object]] = []
+    agent.runtime_event_sink = captured_events.append
+
+    def fake_complete(messages, tools, *, output_schema=None, model_override=None):
+        return AssistantTurn(
+            content='evented typed hello',
+            finish_reason='stop',
+            usage=UsageStats(input_tokens=4, output_tokens=2),
+        )
+
+    monkeypatch.setattr(agent.client, 'complete', fake_complete)
+
+    result = agent.run('say hello')
+
+    assert result.final_output == 'evented typed hello'
+    assert {
+        'state_machine_decision',
+        'session_checkpoint',
+    }.issubset({event.get('type') for event in captured_events})
+    decision_event = next(
+        event for event in captured_events
+        if event.get('type') == 'state_machine_decision'
+    )
+    assert decision_event['action_kind'] == 'llm_call'
+    assert decision_event['rationale'] == 'rule_fired: runtime_query_model'
+    checkpoint_event = next(
+        event for event in captured_events
+        if event.get('type') == 'session_checkpoint'
+    )
+    assert checkpoint_event['session_id'] == result.session_id
+    assert checkpoint_event['typed_state_checkpointed'] is True
+
+
 def test_legacy_outer_loop_escape_hatch_overrides_default(
     tmp_path,
     monkeypatch,
