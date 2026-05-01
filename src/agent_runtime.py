@@ -4714,8 +4714,18 @@ class LocalCodingAgent:
         result: AgentRunResult,
     ) -> AgentRunResult:
         if result.session_id is None:
+            # Even on no-session-id paths, clear pending eval stash so it
+            # doesn't leak into the next session.
+            if self._pending_eval_events:
+                self._pending_eval_events.clear()
             return result
         persist_events = list(result.events)
+        # Backstop named in 9218119 NOT-COVERED: drain any per-tool eval
+        # events that didn't make it through the LLM-call hook (e.g. terminal
+        # tool ended the turn directly). Without this they leak across runs.
+        if self._pending_eval_events:
+            persist_events.extend(self._pending_eval_events)
+            self._pending_eval_events.clear()
         if self.plugin_runtime is not None:
             persist_messages = self.plugin_runtime.before_persist_injections()
             if persist_messages:

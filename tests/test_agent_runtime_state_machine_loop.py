@@ -376,3 +376,71 @@ def test_runner_evaluators_accessor_returns_wired_evaluators(tmp_path):
     assert 'consecutive_error' in names, names
     # Order must match registration so the helper's index-pairing stays sound.
     assert names.index('budget_exhaustion') < names.index('consecutive_error'), names
+
+
+def test_persist_session_drains_pending_eval_stash(tmp_path):
+    """If a tool dispatch leaves verdicts in _pending_eval_events but the run
+    terminates before an LLM-call hook drains them (e.g. terminal tool that
+    ends the turn directly), _persist_session must move them into the result
+    events and clear the stash. Otherwise verdicts leak across sessions."""
+    from src.agent_types import AgentRunResult, UsageStats
+    from src.agent_session import AgentSessionState
+
+    agent = _make_agent(tmp_path)
+    # Pre-populate stash as if a tool error left a 'replan' verdict behind.
+    agent._pending_eval_events.append({
+        'type': 'state_machine_evaluation',
+        'evaluator': 'consecutive_error',
+        'verdict': 'replan',
+        'score': 1.0,
+        'note': 'tool errored',
+        'dimensions': {},
+    })
+
+    session = AgentSessionState(system_prompt_parts=())
+    result = AgentRunResult(
+        final_output='ok',
+        turns=1,
+        tool_calls=0,
+        transcript=session.transcript(),
+        events=(),
+        usage=UsageStats(),
+        total_cost_usd=0.0,
+        stop_reason='stop',
+        file_history=(),
+        session_id='sm-drain-test',
+        scratchpad_directory=None,
+    )
+    persisted = agent._persist_session(session, result)
+
+    types = [e.get('type') for e in persisted.events]
+    assert 'state_machine_evaluation' in types, types
+    assert agent._pending_eval_events == [], 'stash must be cleared'
+
+
+def test_persist_session_clears_stash_even_when_session_id_missing(tmp_path):
+    """No-session-id branch (early-return path) must also clear the stash."""
+    from src.agent_types import AgentRunResult, UsageStats
+    from src.agent_session import AgentSessionState
+
+    agent = _make_agent(tmp_path)
+    agent._pending_eval_events.append({
+        'type': 'state_machine_evaluation',
+        'evaluator': 'consecutive_error',
+        'verdict': 'replan',
+        'score': 1.0,
+        'note': 'leaked',
+        'dimensions': {},
+    })
+
+    session = AgentSessionState(system_prompt_parts=())
+    result = AgentRunResult(
+        final_output='no session id',
+        turns=0, tool_calls=0,
+        transcript=session.transcript(),
+        events=(), usage=UsageStats(), total_cost_usd=0.0,
+        stop_reason='stop', file_history=(),
+        session_id=None, scratchpad_directory=None,
+    )
+    agent._persist_session(session, result)
+    assert agent._pending_eval_events == [], 'stash must be cleared on no-session-id path too'
