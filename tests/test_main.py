@@ -15,6 +15,7 @@ from src.main import (
     _build_agent,
     _run_agent_chat_loop,
     _run_background_worker,
+    _render_worker_event_to_tui,
     build_parser,
     main,
 )
@@ -254,6 +255,42 @@ class MainCliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(events, [{'type': 'content_delta', 'delta': 'live'}])
+
+    def test_worker_state_machine_events_render_to_tui_info(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        class FakeTui:
+            @staticmethod
+            def info(text: str) -> None:
+                calls.append(('info', text))
+
+        renderer = _render_worker_event_to_tui(
+            {
+                'type': 'state_machine_decision',
+                'action_kind': 'llm_call',
+                'rationale': 'rule_fired: runtime_query_model',
+            },
+            tui=FakeTui,
+            stream_renderer=None,
+        )
+        renderer = _render_worker_event_to_tui(
+            {
+                'type': 'session_checkpoint',
+                'session_id': 'abcdef1234567890',
+                'typed_state_checkpointed': True,
+            },
+            tui=FakeTui,
+            stream_renderer=renderer,
+        )
+
+        self.assertIsNone(renderer)
+        self.assertEqual(
+            calls,
+            [
+                ('info', 'state-machine: llm_call - runtime_query_model'),
+                ('info', 'checkpoint: abcdef123456 typed-state saved'),
+            ],
+        )
 
     def test_agent_chat_defaults_to_supervisor_for_interactive_tty(self) -> None:
         fake_agent = SimpleNamespace()

@@ -619,6 +619,47 @@ def _build_background_chat_worker_runner(
     return _worker_runner
 
 
+def _render_worker_event_to_tui(
+    event: dict[str, object],
+    *,
+    tui,
+    stream_renderer,
+):
+    event_type = event.get('type')
+    if event_type == 'content_delta':
+        delta = event.get('delta')
+        if isinstance(delta, str) and delta:
+            if stream_renderer is None:
+                stream_renderer = tui.StreamRenderer()
+                stream_renderer.start()
+            stream_renderer.token(delta)
+    elif event_type == 'tool_start':
+        tool_name = event.get('tool_name')
+        detail = event.get('detail')
+        if isinstance(tool_name, str):
+            tui.tool_start(tool_name, detail if isinstance(detail, str) else '')
+    elif event_type == 'tool_result':
+        tool_name = event.get('tool_name')
+        content = event.get('content')
+        if isinstance(tool_name, str):
+            tui.tool_result(tool_name, content if isinstance(content, str) else '')
+    elif event_type == 'state_machine_decision':
+        action_kind = event.get('action_kind')
+        rationale = event.get('rationale')
+        if isinstance(action_kind, str):
+            reason = rationale if isinstance(rationale, str) else ''
+            if reason.startswith('rule_fired: '):
+                reason = reason.removeprefix('rule_fired: ')
+            tui.info(f'state-machine: {action_kind} - {reason}'.rstrip())
+    elif event_type == 'session_checkpoint':
+        session_id = event.get('session_id')
+        typed_saved = event.get('typed_state_checkpointed') is True
+        if isinstance(session_id, str) and session_id:
+            status = 'typed-state saved' if typed_saved else 'session saved'
+            tui.info(f'checkpoint: {session_id[:12]} {status}')
+    return stream_renderer
+
+
 def _run_agent_chat_loop(
     agent: LocalCodingAgent,
     *,
@@ -790,24 +831,11 @@ def _run_agent_chat_loop(
                 nonlocal worker_stream_renderer
                 if not use_tui:
                     return
-                event_type = event.get('type')
-                if event_type == 'content_delta':
-                    delta = event.get('delta')
-                    if isinstance(delta, str) and delta:
-                        if worker_stream_renderer is None:
-                            worker_stream_renderer = tui.StreamRenderer()
-                            worker_stream_renderer.start()
-                        worker_stream_renderer.token(delta)
-                elif event_type == 'tool_start':
-                    tool_name = event.get('tool_name')
-                    detail = event.get('detail')
-                    if isinstance(tool_name, str):
-                        tui.tool_start(tool_name, detail if isinstance(detail, str) else '')
-                elif event_type == 'tool_result':
-                    tool_name = event.get('tool_name')
-                    content = event.get('content')
-                    if isinstance(tool_name, str):
-                        tui.tool_result(tool_name, content if isinstance(content, str) else '')
+                worker_stream_renderer = _render_worker_event_to_tui(
+                    event,
+                    tui=tui,
+                    stream_renderer=worker_stream_renderer,
+                )
 
             try:
                 setattr(worker_runner, 'on_event', _on_worker_event if use_tui else None)
