@@ -806,3 +806,18 @@ def test_compile_marks_hallucinated_ids_in_who_section(tmp_path):
     text = paths.identity.read_text()
     assert 'mem_real' in text and '~~mem_real~~' not in text
     assert '~~mem_imaginary999~~' in text
+
+
+def test_validate_record_ids_handles_underscores_in_ids(tmp_path):
+    """Real substrate IDs contain many underscores (e.g. mem_loaded_session_X).
+    Regex must match the full ID, not stop at first underscore."""
+    from src.identity_compile import validate_record_ids
+    valid = {'mem_loaded_session_20260429_complete', 'mem_real'}
+    prose = ('I learned from mem_loaded_session_20260429_complete and '
+             'mem_real, but mem_imaginary_long_id_xyz is fake.')
+    out = validate_record_ids(prose, valid)
+    assert 'mem_loaded_session_20260429_complete' in out
+    assert '~~mem_loaded_session_20260429_complete~~' not in out
+    assert '~~mem_imaginary_long_id_xyz~~' in out
+    # Also verify mem_real wasn't double-marked
+    assert '~~mem_real~~' not in out

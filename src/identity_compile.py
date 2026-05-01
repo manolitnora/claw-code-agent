@@ -393,7 +393,7 @@ def synthesize_becoming(*, active_goals: list, decisions: list[MemoryRecord],
     )
 
 
-_RECORD_ID_RE = re.compile(r'\bmem_[a-z0-9]+\b')
+_RECORD_ID_RE = re.compile(r'\bmem_[a-z0-9_]+(?<!_)')
 
 
 def validate_record_ids(prose: str, valid_ids: set[str]) -> str:
