@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import os
 import re
 import socket
 import urllib.error
@@ -564,3 +565,28 @@ def compile_identity(*, paths: 'IdentityPaths', ollama_base: str, ollama_model: 
         'compiled_at': _now_iso(),
         'compiled_at_epoch': _time.time(),
     })
+
+
+def ensure_symlink(link_path: Path, target_path: Path) -> None:
+    """Ensure link_path is a symlink to target_path.
+
+    - If link_path doesn't exist: create symlink.
+    - If link_path is a symlink already pointing at target: no-op.
+    - If link_path is a symlink pointing elsewhere: replace.
+    - If link_path is a regular file or directory: raise FileExistsError.
+    """
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if link_path.is_symlink():
+        if link_path.resolve() == target_path.resolve():
+            return
+        link_path.unlink()
+        os.symlink(target_path, link_path)
+        return
+
+    if link_path.exists():
+        raise FileExistsError(
+            f'{link_path} exists as a non-symlink; refusing to clobber'
+        )
+
+    os.symlink(target_path, link_path)

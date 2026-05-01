@@ -599,3 +599,51 @@ def test_compile_identity_skips_write_when_unchanged(tmp_path):
         compile_identity(paths=paths, ollama_base='http://x', ollama_model='m', thin=False)
 
     assert paths.identity.stat().st_mtime == mtime1
+
+
+def test_ensure_symlink_creates_when_missing(tmp_path):
+    from src.identity_compile import ensure_symlink
+
+    target = tmp_path / 'target.md'
+    target.write_text('hi')
+    link = tmp_path / 'link.md'
+
+    ensure_symlink(link, target)
+    assert link.is_symlink()
+    assert link.resolve() == target.resolve()
+
+
+def test_ensure_symlink_idempotent_when_correct(tmp_path):
+    from src.identity_compile import ensure_symlink
+
+    target = tmp_path / 'target.md'
+    target.write_text('hi')
+    link = tmp_path / 'link.md'
+    ensure_symlink(link, target)
+    first_inode = link.lstat().st_ino
+
+    ensure_symlink(link, target)
+    assert link.lstat().st_ino == first_inode
+
+
+def test_ensure_symlink_replaces_when_pointing_elsewhere(tmp_path):
+    from src.identity_compile import ensure_symlink
+
+    other = tmp_path / 'other.md'; other.write_text('other')
+    target = tmp_path / 'target.md'; target.write_text('target')
+    link = tmp_path / 'link.md'
+
+    link.symlink_to(other)
+    ensure_symlink(link, target)
+    assert link.resolve() == target.resolve()
+
+
+def test_ensure_symlink_does_not_overwrite_regular_file(tmp_path):
+    from src.identity_compile import ensure_symlink
+
+    target = tmp_path / 'target.md'; target.write_text('target')
+    link = tmp_path / 'link.md'; link.write_text('IMPORTANT REGULAR FILE')
+
+    with pytest.raises(FileExistsError):
+        ensure_symlink(link, target)
+    assert link.read_text() == 'IMPORTANT REGULAR FILE'
