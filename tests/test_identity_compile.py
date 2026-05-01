@@ -274,13 +274,42 @@ def test_render_identity_md_assembles_all_sections(tmp_path):
     assert 'generation: 1' in out
     assert 'substrate_sha: abc123' in out
     assert 'prose_freshness: live' in out
-    assert '## who I am\nI am Latti.' in out
+    assert '## who I am\n<!-- WHO-SECTION-START -->\nI am Latti.' in out
+    assert '<!-- WHO-SECTION-END -->' in out
     assert '## where I am' in out
     assert '## what I\'m learning' in out
     assert '<!-- BECOMING-SECTION-START -->' in out
     assert 'I want to grow.' in out
     assert '<!-- BECOMING-SECTION-END -->' in out
     assert 'pointers' in out
+
+
+def test_who_section_extraction_robust_against_llm_headers(tmp_path):
+    """Regression: LLM prose containing its own '## ' headers must not break
+    extract_who_section. Markers (mirror of BECOMING) make this robust."""
+    from src.identity_compile import extract_who_section, render_identity_md
+
+    llm_body_with_headers = """## Who I am
+
+I am a coding agent.
+
+## What I am learning
+
+Things."""
+    rendered = render_identity_md(
+        compiled_at='x', generation=1, substrate_sha='y', prose_freshness='live',
+        who_section=llm_body_with_headers,
+        where_section='## where I am\nstuff',
+        learning_section='## what I\'m learning\nstuff',
+        becoming_section='direction',
+    )
+    p = tmp_path / 'IDENTITY.md'
+    p.write_text(rendered, encoding='utf-8')
+
+    extracted = extract_who_section(p)
+    assert extracted is not None
+    assert 'I am a coding agent.' in extracted
+    assert '## Who I am' in extracted  # the LLM's own header survives
 
 
 def test_atomic_write_sha_gated_skips_when_unchanged(tmp_path):

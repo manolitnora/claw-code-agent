@@ -157,6 +157,10 @@ _BECOMING_RE = re.compile(
     r'<!-- BECOMING-SECTION-START -->\n(?P<body>.*?)\n<!-- BECOMING-SECTION-END -->',
     re.DOTALL,
 )
+_WHO_RE = re.compile(
+    r'<!-- WHO-SECTION-START -->\n(?P<body>.*?)\n<!-- WHO-SECTION-END -->',
+    re.DOTALL,
+)
 
 
 def extract_becoming_section(identity_path: Path) -> str | None:
@@ -168,6 +172,22 @@ def extract_becoming_section(identity_path: Path) -> str | None:
     except OSError:
         return None
     m = _BECOMING_RE.search(text)
+    return m.group('body') if m else None
+
+
+def extract_who_section(identity_path: Path) -> str | None:
+    """Return the contents between WHO-SECTION markers, or None.
+
+    Markers (mirror of BECOMING) are robust against LLM prose containing
+    its own `## ` headers — see Task 16 manual verification finding.
+    """
+    if not identity_path.is_file():
+        return None
+    try:
+        text = identity_path.read_text(encoding='utf-8')
+    except OSError:
+        return None
+    m = _WHO_RE.search(text)
     return m.group('body') if m else None
 
 
@@ -500,7 +520,7 @@ def compile_identity(*, paths: 'IdentityPaths', ollama_base: str, ollama_model: 
 
     prior_compile_at = prior_meta.get('compiled_at_epoch')
     becoming = preserve_becoming_if_user_edited(paths.identity, prior_compile_at)
-    prior_who = extract_section(paths.identity, 'who I am') if paths.identity.is_file() else None
+    prior_who = extract_who_section(paths.identity)
 
     from src.identity_templates import PLACEHOLDER_WHO, PLACEHOLDER_BECOMING
 

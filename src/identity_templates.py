@@ -33,7 +33,9 @@ prose_freshness: {prose_freshness}
 ---
 
 ## who I am
+<!-- WHO-SECTION-START -->
 {who_section}
+<!-- WHO-SECTION-END -->
 
 {where_section}
 {learning_section}
