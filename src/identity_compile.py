@@ -370,3 +370,197 @@ def synthesize_becoming(*, active_goals: list, decisions: list[MemoryRecord],
         base_url=base_url, model=model, prompt=prompt,
         temperature=0.4, num_predict=200, timeout=OLLAMA_TIMEOUT,
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 10: top-level compile_identity orchestration
+# ---------------------------------------------------------------------------
+
+import time as _time
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class IdentityPaths:
+    """Resolved paths for one compile invocation. CLI builds this from ~/.latti/."""
+    memory_dir: Path
+    identity: Path
+    history: Path
+    cursor: Path
+    meta: Path
+    log: Path
+    goals: Path
+
+
+def _load_meta(meta_path: Path) -> dict:
+    if not meta_path.is_file():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_meta(meta_path: Path, meta: dict) -> None:
+    tmp = meta_path.with_suffix(meta_path.suffix + '.tmp')
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(json.dumps(meta, indent=2), encoding='utf-8')
+    tmp.replace(meta_path)
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _content_sha(content: str) -> str:
+    """SHA256 of IDENTITY.md content with volatile frontmatter lines stripped.
+
+    compiled_at and generation change every run even when body is identical.
+    Excluding them lets the sha-gate detect "same prose, different metadata"
+    as unchanged and skip a redundant disk write.
+    """
+    stable = re.sub(r'^compiled_at:.*\n', '', content, count=1, flags=re.MULTILINE)
+    stable = re.sub(r'^generation:.*\n', '', stable, count=1, flags=re.MULTILINE)
+    return hashlib.sha256(stable.encode('utf-8')).hexdigest()
+
+
+def _load_active_goals(goals_path: Path) -> list:
+    """Read goals.jsonl, return ones with status='active'.
+
+    Returns [] if path doesn't exist.
+    """
+    if not goals_path.is_file():
+        return []
+    goals: dict[str, dict] = {}
+    try:
+        for line in goals_path.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if 'id' in d:
+                goals[d['id']] = d
+    except OSError:
+        return []
+
+    class _GoalView:
+        def __init__(self, d: dict) -> None:
+            self.title = d.get('title', '(unnamed)')
+            self.status = d.get('status', 'unknown')
+            self.success_criteria = tuple(d.get('success_criteria', ()))
+
+    return [_GoalView(d) for d in goals.values() if d.get('status') == 'active']
+
+
+def extract_section(identity_path: Path, header_name: str) -> str | None:
+    """Extract the body of an `## <header_name>` section from IDENTITY.md.
+
+    Returns the text between this section's header and the next `## ` header,
+    or None if not found.
+    """
+    if not identity_path.is_file():
+        return None
+    try:
+        text = identity_path.read_text(encoding='utf-8')
+    except OSError:
+        return None
+    pattern = re.compile(
+        rf'^## {re.escape(header_name)}\n(?P<body>.*?)(?=^## |\Z)',
+        re.DOTALL | re.MULTILINE,
+    )
+    m = pattern.search(text)
+    return m.group('body').strip() if m else None
+
+
+def compile_identity(*, paths: 'IdentityPaths', ollama_base: str, ollama_model: str,
+                     thin: bool = False) -> None:
+    """Top-level compile. Idempotent. Failure-isolated by caller (main()).
+
+    Args:
+        paths:        Resolved filesystem paths for this invocation.
+        ollama_base:  Ollama HTTP base URL (e.g. http://localhost:11434).
+        ollama_model: Ollama model name (e.g. gemma:latest).
+        thin:         If True, skip Ollama calls; use template placeholders only.
+    """
+    records = load_typed_records_sorted(paths.memory_dir)
+    substrate_sha = compute_substrate_sha(paths.memory_dir)
+    prior_meta = _load_meta(paths.meta)
+    substrate_changed = substrate_sha != prior_meta.get('substrate_sha')
+
+    active_goals = _load_active_goals(paths.goals)
+    where = render_where_section(active_goals=active_goals, records=records)
+    learning = render_learning_section(
+        scars=[r for r in records if r.kind == 'scar'][-5:],
+        lessons=[r for r in records if r.kind == 'lesson'][-3:],
+    )
+
+    prior_compile_at = prior_meta.get('compiled_at_epoch')
+    becoming = preserve_becoming_if_user_edited(paths.identity, prior_compile_at)
+    prior_who = extract_section(paths.identity, 'who I am') if paths.identity.is_file() else None
+
+    from src.identity_templates import PLACEHOLDER_WHO, PLACEHOLDER_BECOMING
+
+    if thin:
+        who = prior_who or PLACEHOLDER_WHO
+        if becoming is None:
+            becoming = extract_becoming_section(paths.identity) or PLACEHOLDER_BECOMING
+        freshness = 'template_only'
+    else:
+        who_new = None
+        becoming_new = None
+        if substrate_changed:
+            who_new = synthesize_who_i_am(
+                records=records, active_goals=active_goals,
+                base_url=ollama_base, model=ollama_model,
+            )
+            if becoming is None:
+                becoming_new = synthesize_becoming(
+                    active_goals=active_goals,
+                    decisions=[r for r in records if r.kind == 'decision'],
+                    base_url=ollama_base, model=ollama_model,
+                )
+
+        if substrate_changed and who_new is None:
+            freshness = 'stale_no_ollama'
+        else:
+            freshness = 'live'
+
+        who = who_new or prior_who or PLACEHOLDER_WHO
+        if becoming is None:
+            becoming = becoming_new or extract_becoming_section(paths.identity) or PLACEHOLDER_BECOMING
+
+    new_identity = render_identity_md(
+        compiled_at=_now_iso(),
+        generation=prior_meta.get('generation', 0) + 1,
+        substrate_sha=substrate_sha,
+        prose_freshness=freshness,
+        who_section=who,
+        where_section=where,
+        learning_section=learning,
+        becoming_section=becoming,
+    )
+
+    # sha-gate: compare content excluding volatile compiled_at + generation.
+    # write_identity_md_if_changed uses full-content sha; we use a stable sha
+    # (timestamp-stripped) so that a re-compile with identical prose but a
+    # different timestamp is correctly treated as "unchanged".
+    prior_content_sha = prior_meta.get('content_sha')
+    new_content_sha = _content_sha(new_identity)
+    if prior_content_sha != new_content_sha:
+        write_identity_md_if_changed(paths.identity, new_identity, prior_sha=None)
+    # else: sha matches → skip write (mtime preserved)
+
+    append_new_records_to_history(
+        history_path=paths.history, cursor_path=paths.cursor, records=records,
+    )
+
+    _save_meta(paths.meta, {
+        'substrate_sha': substrate_sha,
+        'content_sha': new_content_sha,
+        'generation': prior_meta.get('generation', 0) + 1,
+        'compiled_at': _now_iso(),
+        'compiled_at_epoch': _time.time(),
+    })

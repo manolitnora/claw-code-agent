@@ -488,3 +488,114 @@ def test_synthesize_who_i_am_caps_records_at_20(tmp_path):
     assert 'scar 49' in captured['prompt']
     assert 'scar 30' in captured['prompt']
     assert 'scar 29' not in captured['prompt']
+
+
+# ---------------------------------------------------------------------------
+# Task 10: compile_identity orchestration
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+
+
+@dataclass
+class _TestPaths:
+    memory_dir: Path
+    identity: Path
+    history: Path
+    cursor: Path
+    meta: Path
+    log: Path
+    goals: Path
+
+
+def _make_paths(root: Path) -> '_TestPaths':
+    return _TestPaths(
+        memory_dir=root / 'memory',
+        identity=root / 'IDENTITY.md',
+        history=root / 'HISTORY.md',
+        cursor=root / '.history-cursor',
+        meta=root / '.identity-meta.json',
+        log=root / 'identity-compile.log',
+        goals=root / 'goals.jsonl',
+    )
+
+
+def test_compile_identity_thin_skips_ollama(tmp_path):
+    from src.identity_compile import compile_identity
+    from unittest.mock import patch
+
+    mem = tmp_path / 'memory'
+    _write_typed_record(mem, 'scar', 'a', 'a body')
+
+    paths = _make_paths(tmp_path)
+
+    with patch('src.identity_compile.call_ollama') as mock_ollama:
+        compile_identity(paths=paths, ollama_base='http://x', ollama_model='m', thin=True)
+
+    assert mock_ollama.call_count == 0
+    assert paths.identity.exists()
+    text = paths.identity.read_text()
+    assert 'prose_freshness: template_only' in text
+
+
+def test_compile_identity_empty_substrate(tmp_path):
+    from src.identity_compile import compile_identity
+
+    paths = _make_paths(tmp_path)
+    paths.memory_dir.mkdir(parents=True, exist_ok=True)
+
+    compile_identity(paths=paths, ollama_base='http://x', ollama_model='m', thin=True)
+
+    text = paths.identity.read_text()
+    assert '0 typed records yet' in text
+    assert 'Active goals' in text
+
+
+def test_compile_identity_full_calls_ollama_when_substrate_changed(tmp_path):
+    from src.identity_compile import compile_identity
+    from unittest.mock import patch
+
+    mem = tmp_path / 'memory'
+    _write_typed_record(mem, 'scar', 'a', 'a body')
+    paths = _make_paths(tmp_path)
+
+    with patch('src.identity_compile.call_ollama', return_value='I am Latti.') as mock:
+        compile_identity(paths=paths, ollama_base='http://x', ollama_model='m', thin=False)
+
+    assert mock.call_count == 2  # who_i_am + becoming
+    text = paths.identity.read_text()
+    assert 'I am Latti.' in text
+    assert 'prose_freshness: live' in text
+
+
+def test_compile_identity_ollama_down_falls_back_to_template(tmp_path):
+    from src.identity_compile import compile_identity
+    from unittest.mock import patch
+
+    _write_typed_record(tmp_path / 'memory', 'scar', 'a', 'body')
+    paths = _make_paths(tmp_path)
+
+    with patch('src.identity_compile.call_ollama', return_value=None):
+        compile_identity(paths=paths, ollama_base='http://x', ollama_model='m', thin=False)
+
+    text = paths.identity.read_text()
+    assert 'prose_freshness: stale_no_ollama' in text
+
+
+def test_compile_identity_skips_write_when_unchanged(tmp_path):
+    from src.identity_compile import compile_identity
+    from unittest.mock import patch
+
+    _write_typed_record(tmp_path / 'memory', 'scar', 'a', 'body', last_used='2026-04-01')
+    paths = _make_paths(tmp_path)
+
+    with patch('src.identity_compile.call_ollama', return_value='same prose'):
+        compile_identity(paths=paths, ollama_base='http://x', ollama_model='m', thin=False)
+
+    mtime1 = paths.identity.stat().st_mtime
+
+    import time; time.sleep(0.05)
+    with patch('src.identity_compile.call_ollama', return_value='same prose'):
+        compile_identity(paths=paths, ollama_base='http://x', ollama_model='m', thin=False)
+
+    assert paths.identity.stat().st_mtime == mtime1
