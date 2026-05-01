@@ -2486,9 +2486,10 @@ class LocalCodingAgent:
         except Exception:
             return []
         # Pair results with evaluator names by index — runner.evaluate iterates
-        # self._evaluators in order, so result[i] corresponds to evaluator[i].
+        # evaluators in registration order, so result[i] corresponds to
+        # runner.evaluators[i].
         evaluator_names: list[str] = []
-        for ev in self._sm_runner._evaluators:
+        for ev in self._sm_runner.evaluators:
             try:
                 evaluator_names.append(ev.name)
             except Exception:

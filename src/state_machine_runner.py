@@ -77,6 +77,17 @@ class StateMachineRunner:
     def operators(self) -> tuple[Operator, ...]:
         return self._operators
 
+    @property
+    def evaluators(self) -> tuple[Evaluator, ...]:
+        """Public accessor for wired evaluators.
+
+        Telemetry callers (agent_runtime._evaluate_state_after_step) need to
+        pair evaluator names with their EvaluationResult by index, since
+        evaluate() returns plain results without name. Symmetric with
+        operators above.
+        """
+        return self._evaluators
+
     def pick(self, action: Action) -> Operator:
         """Return the first operator that can handle the action."""
         for op in self._operators:
