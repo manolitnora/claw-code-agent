@@ -94,6 +94,44 @@ def test_flag_on_outer_loop_logs_runtime_controller_rationale_for_plain_answer(
     ]
 
 
+def test_outer_loop_defaults_to_state_machine_controller(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv('LATTI_USE_STATE_MACHINE', raising=False)
+    monkeypatch.delenv('LATTI_USE_LEGACY_LOOP', raising=False)
+    agent = _make_agent(tmp_path)
+    _inject_runner(agent, tmp_path / 'loop_default.jsonl')
+    monkeypatch.setattr(agent, '_check_rotation_gate', lambda result: None)
+
+    def fake_complete(messages, tools, *, output_schema=None, model_override=None):
+        return AssistantTurn(
+            content='default typed hello',
+            finish_reason='stop',
+            usage=UsageStats(input_tokens=4, output_tokens=2),
+        )
+
+    monkeypatch.setattr(agent.client, 'complete', fake_complete)
+
+    result = agent.run('say hello')
+
+    assert result.final_output == 'default typed hello'
+    assert _read_rationales(tmp_path / 'loop_default.jsonl') == [
+        'rule_fired: runtime_query_model',
+    ]
+
+
+def test_legacy_outer_loop_escape_hatch_overrides_default(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv('LATTI_USE_LEGACY_LOOP', '1')
+    monkeypatch.delenv('LATTI_USE_STATE_MACHINE', raising=False)
+    agent = _make_agent(tmp_path)
+
+    assert agent._should_use_state_machine_outer_loop() is False
+
+
 def test_flag_on_outer_loop_logs_runtime_controller_rationale_for_tool_turn(
     tmp_path,
     monkeypatch,
