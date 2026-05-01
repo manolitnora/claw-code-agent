@@ -2472,12 +2472,31 @@ class LocalCodingAgent:
         )
         return self._sm_runner
 
+    def _thread_eval_verdict_to_state(self, verdict: str) -> None:
+        """Write the verdict into _sm_state.runtime['last_verdict'] so the
+        next controller.pick() can read it via the existing runtime channel.
+
+        State is frozen so this constructs a new state via dataclasses.replace.
+        Controllers that don't read 'last_verdict' continue to work unchanged.
+        """
+        if self._sm_state is None:
+            return
+        if verdict == 'continue':
+            return  # the no-op verdict is noise; only thread non-default ones
+        from dataclasses import replace as _dc_replace
+        current_runtime = (
+            dict(self._sm_state.runtime) if isinstance(self._sm_state.runtime, dict) else {}
+        )
+        current_runtime['last_verdict'] = verdict
+        self._sm_state = _dc_replace(self._sm_state, runtime=current_runtime)
+
     def _evaluate_state_after_step(self) -> list[dict]:
         """Run wired evaluators against current _sm_state, return telemetry events.
 
-        Telemetry-only today: events surface evaluator verdicts to the TUI but
-        do NOT alter control flow (loop termination still owned by legacy
-        budget checks). v2 will let 'replan'/'done' verdicts drive transitions.
+        Side-effect: when an evaluator produces a non-'continue' verdict, threads
+        it into _sm_state.runtime['last_verdict'] so the next controller.pick()
+        can react. Threading is opt-in for controllers — silent no-op for those
+        that don't read runtime['last_verdict'].
         """
         if self._sm_runner is None or self._sm_state is None:
             return []
@@ -2495,6 +2514,12 @@ class LocalCodingAgent:
             except Exception:
                 evaluator_names.append(type(ev).__name__)
         events: list[dict] = []
+        # Precedence for threading: 'escalate' > 'timeout' > 'done' > 'replan'.
+        # If multiple evaluators fire, the most-terminal verdict wins on the
+        # state.runtime channel. 'continue' is filtered (no-op).
+        _PRECEDENCE = {'escalate': 4, 'timeout': 3, 'done': 2, 'replan': 1, 'continue': 0}
+        winning_verdict: str | None = None
+        winning_rank = -1
         for i, r in enumerate(results):
             name = evaluator_names[i] if i < len(evaluator_names) else 'unknown'
             events.append({
@@ -2505,6 +2530,12 @@ class LocalCodingAgent:
                 'note': r.note,
                 'dimensions': dict(r.dimensions),
             })
+            rank = _PRECEDENCE.get(r.verdict, 0)
+            if rank > winning_rank:
+                winning_rank = rank
+                winning_verdict = r.verdict
+        if winning_verdict and winning_verdict != 'continue':
+            self._thread_eval_verdict_to_state(winning_verdict)
         return events
 
     def state_machine_memory(self):

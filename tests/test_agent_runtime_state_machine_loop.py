@@ -277,7 +277,7 @@ def test_evaluate_state_after_step_emits_replan_on_error_observation(tmp_path):
     agent._sm_state = State(
         turn_id='t1',
         session_id='sm-test',
-        last_observation=err_obs,
+        last_observation=err_obs, budget_remaining_usd=10.0,
     )
 
     events = agent._evaluate_state_after_step()
@@ -301,7 +301,7 @@ def test_evaluate_state_after_step_emits_continue_on_clean_observation(tmp_path)
     agent._sm_state = State(
         turn_id='t1',
         session_id='sm-test',
-        last_observation=ok_obs,
+        last_observation=ok_obs, budget_remaining_usd=10.0,
     )
 
     events = agent._evaluate_state_after_step()
@@ -336,7 +336,7 @@ def test_per_tool_eval_events_stashed_for_drain(tmp_path):
         payload={'error': 'sim'},
     )
     err_state = State(
-        turn_id='t-err', session_id='sm-test', last_observation=err_obs,
+        turn_id='t-err', session_id='sm-test', last_observation=err_obs, budget_remaining_usd=10.0,
     )
 
     # Simulate run_one_step returning the error state
@@ -444,3 +444,83 @@ def test_persist_session_clears_stash_even_when_session_id_missing(tmp_path):
     )
     agent._persist_session(session, result)
     assert agent._pending_eval_events == [], 'stash must be cleared on no-session-id path too'
+
+
+def test_evaluate_threads_replan_into_state_runtime(tmp_path):
+    """When evaluator returns 'replan', the verdict must be threaded into
+    _sm_state.runtime['last_verdict'] so the next controller.pick() can
+    react via the existing runtime channel."""
+    from src.agent_state_machine import State, Observation
+
+    agent = _make_agent(tmp_path)
+    agent._ensure_state_machine_runner()
+
+    err_obs = Observation(
+        action_id='action-x', kind='error', payload={'error': 'sim'},
+    )
+    agent._sm_state = State(
+        turn_id='t1', session_id='sm-thread', last_observation=err_obs, budget_remaining_usd=10.0,
+    )
+
+    agent._evaluate_state_after_step()
+    assert agent._sm_state.runtime.get('last_verdict') == 'replan', \
+        agent._sm_state.runtime
+
+
+def test_evaluate_does_not_thread_continue(tmp_path):
+    """The default 'continue' verdict is noise and must NOT be threaded —
+    otherwise every successful step would write 'continue' to runtime,
+    masking any prior non-default verdict."""
+    from src.agent_state_machine import State, Observation
+
+    agent = _make_agent(tmp_path)
+    agent._ensure_state_machine_runner()
+
+    ok_obs = Observation(
+        action_id='action-x', kind='success',
+        payload={'tool_name': 'read_file', 'ok': True, 'content': 'x'},
+    )
+    # Pre-populate runtime with a prior 'replan' verdict.
+    agent._sm_state = State(
+        turn_id='t1', session_id='sm-thread', last_observation=ok_obs, budget_remaining_usd=10.0,
+        runtime={'last_verdict': 'replan'},
+    )
+
+    agent._evaluate_state_after_step()
+    # 'continue' should NOT clobber the prior 'replan'.
+    assert agent._sm_state.runtime.get('last_verdict') == 'replan', \
+        agent._sm_state.runtime
+
+
+def test_evaluate_precedence_escalate_beats_replan(tmp_path):
+    """If two evaluators fire with different verdicts, the most-terminal
+    verdict wins on state.runtime. Verifies precedence ordering."""
+    from src.agent_state_machine import State, Observation, EvaluationResult
+    from src.state_machine_evaluators import ConsecutiveErrorEvaluator
+
+    class _AlwaysEscalate:
+        @property
+        def name(self) -> str: return 'always_escalate'
+        def evaluate(self, state, goal=None):
+            return EvaluationResult(
+                task_id='no_goal', score=1.0, verdict='escalate',
+                note='forced',
+            )
+
+    agent = _make_agent(tmp_path)
+    runner = agent._ensure_state_machine_runner()
+    # Inject a forced-escalate evaluator alongside the wired ones.
+    runner._evaluators = runner._evaluators + (_AlwaysEscalate(),)
+
+    err_obs = Observation(
+        action_id='action-x', kind='error', payload={'error': 'sim'},
+    )
+    agent._sm_state = State(
+        turn_id='t1', session_id='sm-thread', last_observation=err_obs, budget_remaining_usd=10.0,
+    )
+
+    agent._evaluate_state_after_step()
+    # 'replan' from ConsecutiveErrorEvaluator + 'escalate' from injection;
+    # escalate has higher precedence so it wins.
+    assert agent._sm_state.runtime.get('last_verdict') == 'escalate', \
+        agent._sm_state.runtime
