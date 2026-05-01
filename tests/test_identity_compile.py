@@ -160,3 +160,39 @@ def test_where_section_with_goals_and_records(tmp_path):
     assert 'active' in out
     assert 'lesson' in out  # last record kind
     assert '5 consecutive sessions' in out
+
+
+def test_learning_section_empty(tmp_path):
+    from src.identity_compile import render_learning_section
+    out = render_learning_section(scars=[], lessons=[])
+    assert '## what I\'m learning' in out
+    assert '(no scars recorded)' in out
+    assert '(no lessons recorded)' in out
+
+
+def test_learning_section_with_records(tmp_path):
+    from src.identity_compile import render_learning_section, load_typed_records_sorted
+
+    mem = tmp_path / 'memory'
+    _write_typed_record(mem, 'scar', 'first', 'first scar body line\nmore lines')
+    _write_typed_record(mem, 'scar', 'second', 'second scar body')
+    _write_typed_record(mem, 'lesson', 'l1', 'a lesson')
+    records = load_typed_records_sorted(mem)
+    scars = [r for r in records if r.kind == 'scar']
+    lessons = [r for r in records if r.kind == 'lesson']
+
+    out = render_learning_section(scars=scars, lessons=lessons)
+    assert 'first scar body line' in out  # only first line, no \n
+    assert 'second scar body' in out
+    assert 'a lesson' in out
+
+
+def test_learning_section_caps_at_5_scars_3_lessons(tmp_path):
+    from src.identity_compile import render_learning_section
+    from src.agent_state_machine import MemoryRecord
+
+    scars = [MemoryRecord.new('scar', f'scar body {i}') for i in range(10)]
+    lessons = [MemoryRecord.new('lesson', f'lesson body {i}') for i in range(10)]
+    out = render_learning_section(scars=scars[-5:], lessons=lessons[-3:])
+    assert out.count('  - scar body') == 5
+    assert out.count('  - lesson body') == 3

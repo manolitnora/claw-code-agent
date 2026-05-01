@@ -127,3 +127,19 @@ def render_where_section(active_goals: list, records: list[MemoryRecord]) -> str
         last_record=last_record,
         recent_focus=recent_focus,
     )
+
+
+def render_learning_section(scars: list[MemoryRecord],
+                            lessons: list[MemoryRecord]) -> str:
+    """Render the templated LEARNING section.
+
+    Caller passes already-sliced lists (last 5 scars, last 3 lessons).
+    """
+    def _line(r: MemoryRecord) -> str:
+        first_line = r.body.splitlines()[0] if r.body.strip() else '(empty)'
+        ts = datetime.date.fromtimestamp(r.last_used).isoformat()
+        return f'  - {first_line} ({ts})'
+
+    scar_lines = '\n'.join(_line(s) for s in scars) if scars else PLACEHOLDER_NO_SCARS
+    lesson_lines = '\n'.join(_line(l) for l in lessons) if lessons else PLACEHOLDER_NO_LESSONS
+    return LEARNING_SECTION.format(scar_lines=scar_lines, lesson_lines=lesson_lines)
