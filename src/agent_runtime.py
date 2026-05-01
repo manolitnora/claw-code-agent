@@ -181,6 +181,11 @@ class LocalCodingAgent:
     resume_source_session_id: str | None = field(default=None, init=False, repr=False)
     model_router: ModelRouter | None = field(default=None, init=False, repr=False)
     scar_router: ScarRouter | None = field(default=None, init=False, repr=False)
+    # Stash for per-tool evaluator events. _dispatch_via_state_machine
+    # appends here after each tool step; the LLM-call hook drains before
+    # firing its own eval. Preserves 'replan' verdicts across multi-tool
+    # turns where state.last_observation would otherwise be clobbered.
+    _pending_eval_events: list = field(default_factory=list, init=False, repr=False)
     # State-machine bridge — PRIMARY path (Step 6 default-on, 2026-04-29).
     # Lazy construction; opt OUT via LATTI_USE_STATE_MACHINE=0 if you need
     # the legacy execute_tool_streaming fallback. The typed loop replaces
@@ -1615,9 +1620,12 @@ class LocalCodingAgent:
                         return self._persist_session(session, result)
 
                     stream_events.extend(event.to_dict() for event in turn_events)
-                    # Emit evaluator telemetry after the LLM step so the TUI
-                    # sees verdicts (e.g. ConsecutiveErrorEvaluator → 'replan'
-                    # if last observation was an error). Telemetry-only today.
+                    # Drain any per-tool eval events stashed since last LLM
+                    # step (so multi-tool 'replan' verdicts survive), then
+                    # emit fresh eval against current state.
+                    if self._pending_eval_events:
+                        stream_events.extend(self._pending_eval_events)
+                        self._pending_eval_events.clear()
                     stream_events.extend(self._evaluate_state_after_step())
                     model_calls += 1
                     total_usage = total_usage + turn.usage
@@ -2672,6 +2680,14 @@ class LocalCodingAgent:
         # - constitutional wall blocks (force-push, secrets, rm -rf, etc.)
         # Each event becomes a typed MemoryRecord persisted under ~/.latti/memory/.
         self._maybe_save_scar(action, observation)
+
+        # Run evaluators against the post-step state and stash any verdicts.
+        # The LLM-call hook drains this queue so multi-tool turns don't
+        # clobber a 'replan' verdict (state.last_observation gets overwritten
+        # by each subsequent tool's observation).
+        eval_events = self._evaluate_state_after_step()
+        if eval_events:
+            self._pending_eval_events.extend(eval_events)
 
         # Convert Observation → ToolExecutionResult
         if observation.kind == 'success':

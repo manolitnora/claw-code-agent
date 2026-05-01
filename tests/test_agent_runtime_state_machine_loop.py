@@ -318,3 +318,38 @@ def test_evaluate_state_after_step_no_runner_returns_empty(tmp_path):
     # Don't construct runner; _sm_state stays None.
     events = agent._evaluate_state_after_step()
     assert events == []
+
+
+def test_per_tool_eval_events_stashed_for_drain(tmp_path):
+    """When _dispatch_via_state_machine processes a tool that errors, its
+    evaluator verdicts must accumulate in _pending_eval_events for the LLM
+    hook to drain. Otherwise sequential tools clobber the 'replan' signal."""
+    from src.agent_state_machine import State, Observation
+    from unittest.mock import patch
+    from src.agent_types import ToolCall
+
+    agent = _make_agent(tmp_path)
+    agent._ensure_state_machine_runner()
+
+    err_obs = Observation(
+        action_id='action-x', kind='error',
+        payload={'error': 'sim'},
+    )
+    err_state = State(
+        turn_id='t-err', session_id='sm-test', last_observation=err_obs,
+    )
+
+    # Simulate run_one_step returning the error state
+    with patch.object(agent._sm_runner, 'run_one_step',
+                      return_value=(err_obs, err_state)):
+        # Need a real ToolCall-shaped object; minimal stub
+        class _TC:
+            name = 'read_file'
+            arguments = {'path': '/tmp/x'}
+            id = 'tc1'
+        agent._dispatch_via_state_machine(_TC())
+
+    # The 'replan' verdict from ConsecutiveErrorEvaluator should be in the
+    # stash, not lost.
+    verdicts = {(e['evaluator'], e['verdict']) for e in agent._pending_eval_events}
+    assert ('consecutive_error', 'replan') in verdicts, verdicts
