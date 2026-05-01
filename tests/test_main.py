@@ -5,10 +5,19 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.main import _build_runtime_config, _build_agent, _run_agent_chat_loop, build_parser
+from src.background_runtime import BackgroundSessionRecord, BackgroundSessionRuntime
+from src.main import (
+    _build_runtime_config,
+    _build_agent,
+    _run_agent_chat_loop,
+    _run_background_worker,
+    build_parser,
+)
 from src.agent_types import AgentRunResult
+from src.tui_supervisor import read_worker_events
 
 
 class FakeHTTPResponse:
@@ -191,6 +200,58 @@ class MainCliTests(unittest.TestCase):
             recorded_results,
             ['worker:First prompt', 'worker:Second prompt'],
         )
+
+    def test_background_worker_writes_runtime_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir) / 'background'
+            runtime = BackgroundSessionRuntime(root)
+            background_id = 'bg_events'
+            record = BackgroundSessionRecord(
+                background_id=background_id,
+                pid=123,
+                prompt='prompt',
+                workspace_cwd=str(Path(tmp_dir)),
+                model='test-model',
+                mode='chat',
+                status='running',
+                log_path=str(runtime.log_path(background_id)),
+                record_path=str(runtime.record_path(background_id)),
+                started_at='2026-04-29T00:00:00+00:00',
+                command=('python3', '-m', 'src.main'),
+            )
+            runtime.save_record(record)
+
+            class FakeAgent:
+                runtime_event_sink = None
+
+                def run(self, prompt: str) -> AgentRunResult:
+                    assert prompt == 'prompt'
+                    assert self.runtime_event_sink is not None
+                    self.runtime_event_sink({'type': 'content_delta', 'delta': 'live'})
+                    return AgentRunResult(
+                        final_output='live',
+                        turns=1,
+                        tool_calls=0,
+                        transcript=(),
+                        events=({'type': 'content_delta', 'delta': 'live'},),
+                        session_id='sess_live',
+                    )
+
+            args = SimpleNamespace(
+                background_root=str(root),
+                background_id=background_id,
+                prompt='prompt',
+                resume_session_id=None,
+                show_transcript=False,
+            )
+
+            with patch('src.main._build_agent', return_value=FakeAgent()):
+                exit_code = _run_background_worker(args)
+
+            events, _ = read_worker_events(root, background_id)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(events, [{'type': 'content_delta', 'delta': 'live'}])
 
     def test_parser_accepts_remote_runtime_commands(self) -> None:
         parser = build_parser()

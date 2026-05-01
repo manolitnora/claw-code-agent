@@ -54,7 +54,7 @@ from .session_store import (
     load_session,
 )
 from .setup import run_setup
-from .tui_supervisor import run_background_turn, save_worker_result
+from .tui_supervisor import append_worker_event, run_background_turn, save_worker_result
 from .tool_pool import assemble_tool_pool
 from .tools import execute_tool, get_tool, get_tools, render_tool_index
 
@@ -309,6 +309,11 @@ def _run_background_worker(args: argparse.Namespace) -> int:
     session_path = None
     try:
         agent = _build_agent(args)
+        agent.runtime_event_sink = lambda event: append_worker_event(
+            background_runtime.root,
+            args.background_id,
+            event,
+        )
         result = _execute_agent_turn(
             agent,
             args.prompt,
@@ -603,6 +608,7 @@ def _build_background_chat_worker_runner(
                 background_id=background_id,
                 process_cwd=process_cwd,
             ),
+            on_event=getattr(_worker_runner, 'on_event', None),
         )
         if final_record.session_id and not result.session_id:
             result = replace(result, session_id=final_record.session_id)
@@ -778,11 +784,42 @@ def _run_agent_chat_loop(
             return 0
 
         if worker_runner is not None:
+            worker_stream_renderer = None
+
+            def _on_worker_event(event: dict[str, object]) -> None:
+                nonlocal worker_stream_renderer
+                if not use_tui:
+                    return
+                event_type = event.get('type')
+                if event_type == 'content_delta':
+                    delta = event.get('delta')
+                    if isinstance(delta, str) and delta:
+                        if worker_stream_renderer is None:
+                            worker_stream_renderer = tui.StreamRenderer()
+                            worker_stream_renderer.start()
+                        worker_stream_renderer.token(delta)
+                elif event_type == 'tool_start':
+                    tool_name = event.get('tool_name')
+                    detail = event.get('detail')
+                    if isinstance(tool_name, str):
+                        tui.tool_start(tool_name, detail if isinstance(detail, str) else '')
+                elif event_type == 'tool_result':
+                    tool_name = event.get('tool_name')
+                    content = event.get('content')
+                    if isinstance(tool_name, str):
+                        tui.tool_result(tool_name, content if isinstance(content, str) else '')
+
+            try:
+                setattr(worker_runner, 'on_event', _on_worker_event if use_tui else None)
+            except Exception:
+                pass
             if use_tui:
                 tui.thinking_start()
             try:
                 result = worker_runner(user_input, active_session_id)
             finally:
+                if worker_stream_renderer is not None:
+                    worker_stream_renderer.end()
                 if use_tui:
                     tui.thinking_clear()
         else:

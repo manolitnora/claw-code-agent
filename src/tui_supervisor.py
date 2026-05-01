@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Callable
 
 from .agent_types import AgentRunResult, JSONDict, UsageStats
 from .background_runtime import BackgroundSessionRecord
@@ -10,6 +11,51 @@ from .background_runtime import BackgroundSessionRecord
 
 def worker_result_path(root: Path, background_id: str) -> Path:
     return Path(root).resolve() / f'{background_id}.result.json'
+
+
+def worker_event_path(root: Path, background_id: str) -> Path:
+    return Path(root).resolve() / f'{background_id}.events.jsonl'
+
+
+def append_worker_event(root: Path, background_id: str, event: JSONDict) -> Path:
+    path = worker_event_path(root, background_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a', encoding='utf-8') as handle:
+        handle.write(json.dumps(dict(event), ensure_ascii=True, separators=(',', ':')) + '\n')
+    return path
+
+
+def read_worker_events(
+    root: Path,
+    background_id: str,
+    *,
+    offset: int = 0,
+) -> tuple[list[JSONDict], int]:
+    path = worker_event_path(root, background_id)
+    if not path.exists():
+        return [], offset
+    events: list[JSONDict] = []
+    with path.open('r', encoding='utf-8') as handle:
+        handle.seek(max(0, offset))
+        while True:
+            line_start = handle.tell()
+            line = handle.readline()
+            if not line:
+                break
+            if not line.endswith('\n'):
+                handle.seek(line_start)
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+        new_offset = handle.tell()
+    return events, new_offset
 
 
 def save_worker_result(root: Path, background_id: str, result: AgentRunResult) -> Path:
@@ -96,11 +142,28 @@ def run_background_turn(
     launch_worker,
     poll_interval_seconds: float = 0.1,
     timeout_seconds: float | None = None,
+    on_event: Callable[[JSONDict], None] | None = None,
 ) -> tuple[BackgroundSessionRecord, AgentRunResult]:
     record = launch_worker()
     deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    event_offset = 0
+
+    def _drain_events() -> None:
+        nonlocal event_offset
+        if on_event is None:
+            return
+        events, event_offset = read_worker_events(
+            runtime.root,
+            record.background_id,
+            offset=event_offset,
+        )
+        for event in events:
+            on_event(event)
+
     while True:
+        _drain_events()
         current = runtime.load_record(record.background_id)
+        _drain_events()
         if current.status != 'running':
             try:
                 return current, load_worker_result(runtime.root, current.background_id)

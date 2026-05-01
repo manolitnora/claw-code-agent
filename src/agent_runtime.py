@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .account_runtime import AccountRuntime
@@ -75,6 +75,26 @@ from .token_budget import calculate_token_budget, format_token_budget
 
 _LATTI_DIR = Path.home() / '.latti'
 _IDENTITY_SHIM = _LATTI_DIR / 'scripts' / 'identity_compile.py'
+
+
+class _ObservableEventList(list[dict[str, object]]):
+    def __init__(self, event_sink: Callable[[dict[str, object]], None]) -> None:
+        super().__init__()
+        self._event_sink = event_sink
+
+    def append(self, event: dict[str, object]) -> None:  # type: ignore[override]
+        super().append(event)
+        self._emit(event)
+
+    def extend(self, events) -> None:  # type: ignore[override]
+        for event in events:
+            self.append(event)
+
+    def _emit(self, event: dict[str, object]) -> None:
+        try:
+            self._event_sink(dict(event))
+        except Exception:
+            pass
 
 
 def _maybe_spawn_identity_compiler() -> None:
@@ -170,6 +190,11 @@ class LocalCodingAgent:
     _sm_memory: 'object | None' = field(default=None, init=False, repr=False)
     _sm_goals: 'object | None' = field(default=None, init=False, repr=False)
     _sm_tasks: 'object | None' = field(default=None, init=False, repr=False)
+    runtime_event_sink: Callable[[dict[str, object]], None] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if self.tool_registry is None:
@@ -602,7 +627,7 @@ class LocalCodingAgent:
         total_usage = starting_usage
         total_cost_usd = starting_cost_usd
         file_history = list(existing_file_history)
-        stream_events: list[dict[str, object]] = []
+        stream_events: list[dict[str, object]] = self._new_stream_events()
         assistant_response_segments: list[str] = []
         consecutive_empty_responses = 0
         delegated_tasks = sum(
@@ -1353,6 +1378,11 @@ class LocalCodingAgent:
             os.environ.get('LATTI_USE_STATE_MACHINE') != '0'
             and os.environ.get('LATTI_USE_LEGACY_LOOP') != '1'
         )
+
+    def _new_stream_events(self) -> list[dict[str, object]]:
+        if self.runtime_event_sink is None:
+            return []
+        return _ObservableEventList(self.runtime_event_sink)
 
     def _build_state_machine_llm_action_payload(
         self,
