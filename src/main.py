@@ -657,6 +657,18 @@ def _render_worker_event_to_tui(
         if isinstance(session_id, str) and session_id:
             status = 'typed-state saved' if typed_saved else 'session saved'
             tui.info(f'checkpoint: {session_id[:12]} {status}')
+    elif event_type == 'state_machine_evaluation':
+        # Telemetry-only: surfaces evaluator verdicts without altering control
+        # flow. v2 will let 'replan'/'done' verdicts drive transitions.
+        evaluator = event.get('evaluator')
+        verdict = event.get('verdict')
+        note = event.get('note')
+        if isinstance(evaluator, str) and isinstance(verdict, str):
+            # Suppress the noisy 'continue' verdict — only show non-default
+            # verdicts (replan, done, escalate, timeout).
+            if verdict != 'continue':
+                detail = f' — {note}' if isinstance(note, str) and note else ''
+                tui.info(f'evaluator {evaluator}: {verdict}{detail}'.rstrip())
     return stream_renderer
 
 

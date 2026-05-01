@@ -1615,6 +1615,10 @@ class LocalCodingAgent:
                         return self._persist_session(session, result)
 
                     stream_events.extend(event.to_dict() for event in turn_events)
+                    # Emit evaluator telemetry after the LLM step so the TUI
+                    # sees verdicts (e.g. ConsecutiveErrorEvaluator → 'replan'
+                    # if last observation was an error). Telemetry-only today.
+                    stream_events.extend(self._evaluate_state_after_step())
                     model_calls += 1
                     total_usage = total_usage + turn.usage
                     total_cost_usd = self.model_config.pricing.estimate_cost_usd(total_usage)
@@ -2427,7 +2431,10 @@ class LocalCodingAgent:
             NonEmptyContentValidator,
             ObservationShapeValidator,
         )
-        from .state_machine_evaluators import BudgetExhaustionEvaluator
+        from .state_machine_evaluators import (
+            BudgetExhaustionEvaluator,
+            ConsecutiveErrorEvaluator,
+        )
 
         llm_operator = (
             StreamingLLMOperator(self.client)
@@ -2444,9 +2451,52 @@ class LocalCodingAgent:
                 ObservationShapeValidator(),
                 NonEmptyContentValidator(),
             ],
-            evaluators=[BudgetExhaustionEvaluator()],
+            # ConsecutiveErrorEvaluator returns 'replan' when last observation
+            # is an error; today this only feeds telemetry, but it makes
+            # error-driven control surfaces visible to the TUI.
+            # TaskCompletionEvaluator deliberately NOT wired until task
+            # decomposition lands in the production state path — without it
+            # the evaluator would emit 'done' on every successful step.
+            evaluators=[
+                BudgetExhaustionEvaluator(),
+                ConsecutiveErrorEvaluator(),
+            ],
         )
         return self._sm_runner
+
+    def _evaluate_state_after_step(self) -> list[dict]:
+        """Run wired evaluators against current _sm_state, return telemetry events.
+
+        Telemetry-only today: events surface evaluator verdicts to the TUI but
+        do NOT alter control flow (loop termination still owned by legacy
+        budget checks). v2 will let 'replan'/'done' verdicts drive transitions.
+        """
+        if self._sm_runner is None or self._sm_state is None:
+            return []
+        try:
+            results = self._sm_runner.evaluate(self._sm_state, goal=None)
+        except Exception:
+            return []
+        # Pair results with evaluator names by index — runner.evaluate iterates
+        # self._evaluators in order, so result[i] corresponds to evaluator[i].
+        evaluator_names: list[str] = []
+        for ev in self._sm_runner._evaluators:
+            try:
+                evaluator_names.append(ev.name)
+            except Exception:
+                evaluator_names.append(type(ev).__name__)
+        events: list[dict] = []
+        for i, r in enumerate(results):
+            name = evaluator_names[i] if i < len(evaluator_names) else 'unknown'
+            events.append({
+                'type': 'state_machine_evaluation',
+                'evaluator': name,
+                'verdict': r.verdict,
+                'score': r.score,
+                'note': r.note,
+                'dimensions': dict(r.dimensions),
+            })
+        return events
 
     def state_machine_memory(self):
         """Lazy-construct and return a LattiMemoryStore for ~/.latti/memory.

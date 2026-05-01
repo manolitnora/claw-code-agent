@@ -255,3 +255,66 @@ def test_flag_on_outer_loop_logs_runtime_controller_rationale_for_continuation(
         'rule_fired: runtime_query_model',
         'rule_fired: runtime_query_model',
     ]
+
+
+# ---- evaluator telemetry (added 2026-05-02) -------------------------------
+
+def test_evaluate_state_after_step_emits_replan_on_error_observation(tmp_path):
+    """ConsecutiveErrorEvaluator should be wired and produce a 'replan' verdict
+    when the last observation in state was an error. Telemetry-only today."""
+    from src.agent_state_machine import State, Observation, MemoryRecord
+
+    agent = _make_agent(tmp_path)
+    # Force the runner to be constructed with the production wiring (which
+    # now includes ConsecutiveErrorEvaluator).
+    agent._ensure_state_machine_runner()
+
+    err_obs = Observation(
+        action_id='action-x',
+        kind='error',
+        payload={'error': 'simulated tool error'},
+    )
+    agent._sm_state = State(
+        turn_id='t1',
+        session_id='sm-test',
+        last_observation=err_obs,
+    )
+
+    events = agent._evaluate_state_after_step()
+    verdicts = {(e['evaluator'], e['verdict']) for e in events}
+    assert ('consecutive_error', 'replan') in verdicts, verdicts
+
+
+def test_evaluate_state_after_step_emits_continue_on_clean_observation(tmp_path):
+    """When last observation is success (not error), ConsecutiveErrorEvaluator
+    returns 'continue' — verdict appears in telemetry but caller filters."""
+    from src.agent_state_machine import State, Observation
+
+    agent = _make_agent(tmp_path)
+    agent._ensure_state_machine_runner()
+
+    ok_obs = Observation(
+        action_id='action-x',
+        kind='success',
+        payload={'tool_name': 'read_file', 'ok': True, 'content': 'x'},
+    )
+    agent._sm_state = State(
+        turn_id='t1',
+        session_id='sm-test',
+        last_observation=ok_obs,
+    )
+
+    events = agent._evaluate_state_after_step()
+    verdicts = {(e['evaluator'], e['verdict']) for e in events}
+    # ConsecutiveErrorEvaluator should be present and return 'continue'.
+    assert ('consecutive_error', 'continue') in verdicts, verdicts
+    # Replan must NOT fire on a clean observation.
+    assert not any(v == 'replan' for _, v in verdicts), verdicts
+
+
+def test_evaluate_state_after_step_no_runner_returns_empty(tmp_path):
+    """When _sm_state is None, helper returns [] without crashing."""
+    agent = _make_agent(tmp_path)
+    # Don't construct runner; _sm_state stays None.
+    events = agent._evaluate_state_after_step()
+    assert events == []
