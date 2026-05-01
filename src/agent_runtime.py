@@ -403,6 +403,7 @@ class LocalCodingAgent:
         # of prior claims are recognized structurally, not re-reasoned.
         self._inject_claim_matches(prompt)
         self._bind_state_machine_session(session_id)
+        registered_goal = self._register_goal_from_prompt(prompt, session_id)
         result = self._run_prompt(
             prompt,
             base_session=None,
@@ -412,6 +413,15 @@ class LocalCodingAgent:
         )
         self._accumulate_usage(result)
         self._finalize_managed_agent(result)
+        # Mark the registered Goal as done only on a clean stop_reason.
+        # Exclude error/timeout-class outcomes so a budget-exhausted or
+        # max-turns-truncated run doesn't mislabel an unfinished Goal as done.
+        _GOAL_NOT_DONE_STOP_REASONS = {
+            None, 'error', 'backend_error', 'budget_exceeded',
+            'max_turns', 'max_tool_calls', 'max_model_calls',
+        }
+        if registered_goal is not None and result.stop_reason not in _GOAL_NOT_DONE_STOP_REASONS:
+            self._mark_goal_done(registered_goal)
 
         # ROTATION GATE: Check if we should rotate to self-directed work
         # This is the decision point that prevents orbit
@@ -473,6 +483,7 @@ class LocalCodingAgent:
         )
         if not self._restore_persisted_state_machine_state(stored_session):
             self._bind_state_machine_session(stored_session.session_id)
+        registered_goal = self._register_goal_from_prompt(prompt, stored_session.session_id)
         result = self._run_prompt(
             prompt,
             base_session=session,
@@ -482,6 +493,14 @@ class LocalCodingAgent:
         )
         self._accumulate_usage(result)
         self._finalize_managed_agent(result)
+        # Mirror run()'s clean-stop-marks-done behavior so resume sessions
+        # close their goals symmetrically. Same exclusion list.
+        _GOAL_NOT_DONE_STOP_REASONS = {
+            None, 'error', 'backend_error', 'budget_exceeded',
+            'max_turns', 'max_tool_calls', 'max_model_calls',
+        }
+        if registered_goal is not None and result.stop_reason not in _GOAL_NOT_DONE_STOP_REASONS:
+            self._mark_goal_done(registered_goal)
         return result
 
     def _run_prompt(
@@ -2210,6 +2229,7 @@ class LocalCodingAgent:
                 decided_by=decided_by,
             )
             self._sm_state = new_state
+            self._maybe_save_scar(action, obs)
             if obs.kind == 'error':
                 raise OpenAICompatError(str(obs.payload.get('error', 'state-machine llm_call failed')))
 
@@ -2308,6 +2328,7 @@ class LocalCodingAgent:
         finally:
             llm_op._event_callback = None
         self._sm_state = new_state
+        self._maybe_save_scar(action, obs)
         if has_content:
             renderer.end()
         if obs.kind == 'error':
@@ -2547,6 +2568,12 @@ class LocalCodingAgent:
                     break
         self._sm_state = new_state
 
+        # Auto-save scar to LattiMemoryStore on contract violations:
+        # - blocking validations (Operator returned wrong shape)
+        # - constitutional wall blocks (force-push, secrets, rm -rf, etc.)
+        # Each event becomes a typed MemoryRecord persisted under ~/.latti/memory/.
+        self._maybe_save_scar(action, observation)
+
         # Convert Observation → ToolExecutionResult
         if observation.kind == 'success':
             return ToolExecutionResult(
@@ -2561,6 +2588,121 @@ class LocalCodingAgent:
             content=observation.payload.get('content') or observation.payload.get('error', 'state-machine dispatch failed'),
             metadata=observation.payload.get('metadata', {}) or {},
         )
+
+    def _register_goal_from_prompt(self, prompt: str, session_id: str):
+        """Register a typed Goal in GoalRegistry whenever a real user prompt
+        starts a session. The Goal's title is the first 80 chars of the prompt;
+        full prompt persists as a success criterion. Failures are silent.
+
+        Returns the registered Goal (or None if registration was skipped).
+        """
+        if not isinstance(prompt, str) or not prompt.strip():
+            return None
+        if os.environ.get('LATTI_USE_STATE_MACHINE') == '0':
+            return None
+        try:
+            from .agent_state_machine import Goal
+            registry = self.state_machine_goals()
+            if registry is None:
+                return None
+            title = prompt.strip().splitlines()[0][:80]
+            goal = Goal.new(
+                title=title,
+                success_criteria=(prompt.strip()[:500],),
+                owner='user',
+            )
+            registry.register(goal)
+            return goal
+        except Exception:
+            return None
+
+    def _mark_goal_done(self, goal) -> None:
+        """Append a 'done' line to GoalRegistry for this goal. Best-effort —
+        any failure (registry missing, FS error) is silent so completion-
+        marking can never break a successful run."""
+        if goal is None:
+            return
+        try:
+            registry = self.state_machine_goals()
+            if registry is None:
+                return
+            registry.mark_done(goal.id)
+        except Exception:
+            pass
+
+    def _maybe_save_scar(self, action, observation) -> None:
+        """If the observation indicates a contract violation, persist a scar.
+
+        Triggers:
+          - observation.payload['blocking_validations'] present (Validator blocked)
+          - observation.payload['wall'] present (constitutional wall blocked)
+
+        The scar goes to ~/.latti/memory/ via LattiMemoryStore as a typed
+        MemoryRecord(kind='scar'). Failures are silent — scar persistence
+        must never break the dispatch path.
+        """
+        # Only error observations can be scar-worthy
+        if observation.kind != 'error':
+            return
+        payload = observation.payload or {}
+        is_wall_block = bool(payload.get('wall'))
+        is_validator_block = 'blocking_validations' in payload
+        if not (is_wall_block or is_validator_block):
+            return
+
+        try:
+            from .agent_state_machine import MemoryRecord
+            store = self.state_machine_memory()
+            if store is None:
+                return
+
+            session_id = getattr(self._sm_state, 'session_id', None) if self._sm_state else None
+            tool_name = payload.get('tool_name') or action.payload.get('tool_name', 'unknown')
+
+            if is_wall_block:
+                wall = payload.get('wall', 'unknown_wall')
+                kind_label = f'wall_{wall}'
+                body = (
+                    f'**TRIGGER:** action.kind={action.kind} tool={tool_name!r}\n\n'
+                    f'**WALL:** {wall}\n\n'
+                    f'**ACTION PAYLOAD:** {dict(action.payload)}\n\n'
+                    f'**WHY THIS IS A SCAR:** A constitutional wall blocked this action '
+                    f'before operator dispatch. The next instance must recognize this '
+                    f'pattern and avoid the same shape.'
+                )
+                description = f'wall {wall} blocked {tool_name!r}'
+            else:
+                blocking = payload.get('blocking_validations') or []
+                check_names = [
+                    c.get('name', '?')
+                    for v in blocking
+                    for c in v.get('checks', [])
+                    if not c.get('passed', True)
+                ]
+                # Distinct check-name signatures → distinct scar files.
+                # Identical signatures → same filename → overwrite (dedup).
+                # Sort + cap to keep filename bounded and order-stable.
+                _signature = '_'.join(sorted(set(check_names))[:3]) or 'unnamed'
+                kind_label = f'validator_block_{_signature}'
+                body = (
+                    f'**TRIGGER:** action.kind={action.kind} tool={tool_name!r}\n\n'
+                    f'**FAILED CHECKS:** {", ".join(check_names) or "(unnamed)"}\n\n'
+                    f'**WHY THIS IS A SCAR:** A post-execution Validator blocked the '
+                    f'observation. Either the Operator returned a misshapen result or '
+                    f'the contract changed. Investigate before assuming legitimate use.'
+                )
+                description = f'validator blocked {tool_name!r} on {check_names[:2]}'
+
+            record = MemoryRecord.new(
+                kind='scar',
+                body=body,
+                source_session_id=session_id,
+                source_turn_id=getattr(self._sm_state, 'turn_id', None) if self._sm_state else None,
+            )
+            store.save(record, name=kind_label, description=description)
+        except Exception:
+            # Scar persistence is best-effort. Never break the dispatch path.
+            pass
 
     @staticmethod
     def _tool_call_detail(tool_call) -> str:
@@ -5569,6 +5711,7 @@ class LocalCodingAgent:
             workflow_runtime=self.workflow_runtime,
             worktree_runtime=self.worktree_runtime,
         )
+        self._sm_runner = None
 
     def _apply_runtime_cwd_update(self, new_cwd: Path) -> None:
         resolved_cwd = new_cwd.resolve()
@@ -5659,6 +5802,7 @@ class LocalCodingAgent:
             workflow_runtime=self.workflow_runtime,
             worktree_runtime=self.worktree_runtime,
         )
+        self._sm_runner = None
 
     def _apply_plugin_before_prompt_hooks(self, prompt: str) -> str:
         if self.plugin_runtime is None:
