@@ -308,3 +308,66 @@ def test_atomic_write_writes_when_content_differs(tmp_path):
     written = write_identity_md_if_changed(target, 'content v2\n', prior_sha='wrong-sha')
     assert written is True
     assert target.read_text() == 'content v2\n'
+
+
+def test_render_history_entry_includes_kind_id_body(tmp_path):
+    from src.identity_compile import render_history_entries
+    from src.agent_state_machine import MemoryRecord
+
+    rec = MemoryRecord.new('scar', 'a scar happened\nmore detail')
+    out = render_history_entries([rec])
+    assert '· scar' in out
+    assert rec.id in out
+    assert 'a scar happened' in out
+
+
+def test_load_cursor_returns_zero_when_file_absent(tmp_path):
+    from src.identity_compile import load_cursor
+    cur = load_cursor(tmp_path / 'no-cursor')
+    assert cur == {'last_ts': 0.0, 'last_id': None}
+
+
+def test_save_then_load_cursor_roundtrip(tmp_path):
+    from src.identity_compile import load_cursor, save_cursor
+    p = tmp_path / 'cursor.json'
+    save_cursor(p, {'last_ts': 1234.5, 'last_id': 'mem_xyz'})
+    cur = load_cursor(p)
+    assert cur['last_ts'] == 1234.5
+    assert cur['last_id'] == 'mem_xyz'
+
+
+def test_history_appends_only_new_records(tmp_path):
+    from src.identity_compile import (
+        load_typed_records_sorted, append_new_records_to_history,
+    )
+
+    mem = tmp_path / 'memory'
+    _write_typed_record(mem, 'scar', 'first', 'first', last_used='2026-04-01')
+    _write_typed_record(mem, 'scar', 'second', 'second', last_used='2026-04-02')
+
+    history = tmp_path / 'HISTORY.md'
+    cursor_path = tmp_path / '.history-cursor'
+
+    appended1 = append_new_records_to_history(
+        history_path=history, cursor_path=cursor_path,
+        records=load_typed_records_sorted(mem),
+    )
+    assert appended1 == 2
+    assert 'first' in history.read_text()
+    assert 'second' in history.read_text()
+
+    appended2 = append_new_records_to_history(
+        history_path=history, cursor_path=cursor_path,
+        records=load_typed_records_sorted(mem),
+    )
+    assert appended2 == 0
+    body_size = history.stat().st_size
+
+    _write_typed_record(mem, 'lesson', 'third', 'third', last_used='2026-04-03')
+    appended3 = append_new_records_to_history(
+        history_path=history, cursor_path=cursor_path,
+        records=load_typed_records_sorted(mem),
+    )
+    assert appended3 == 1
+    assert history.stat().st_size > body_size
+    assert 'third' in history.read_text()

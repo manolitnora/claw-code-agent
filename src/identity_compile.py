@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -22,6 +23,7 @@ from src.identity_templates import (
     WHERE_SECTION, LEARNING_SECTION, IDENTITY_MD,
     PLACEHOLDER_NO_GOALS, PLACEHOLDER_NO_RECORDS,
     PLACEHOLDER_NO_SCARS, PLACEHOLDER_NO_LESSONS,
+    HISTORY_HEADER, HISTORY_ENTRY,
 )
 
 
@@ -211,3 +213,56 @@ def write_identity_md_if_changed(target: Path, content: str,
     tmp.write_text(content, encoding='utf-8')
     tmp.replace(target)
     return True
+
+
+def render_history_entries(records: list[MemoryRecord]) -> str:
+    """Render N records as concatenated HISTORY.md entries."""
+    chunks = []
+    for r in records:
+        dt = datetime.datetime.fromtimestamp(r.last_used, tz=datetime.timezone.utc)
+        chunks.append(HISTORY_ENTRY.format(
+            date=dt.date().isoformat(),
+            time=dt.strftime('%H:%M'),
+            kind=r.kind,
+            record_id=r.id,
+            body=r.body.strip(),
+        ))
+    return ''.join(chunks)
+
+
+def load_cursor(cursor_path: Path) -> dict:
+    """Read the last-appended cursor; default to zero if missing."""
+    if not cursor_path.is_file():
+        return {'last_ts': 0.0, 'last_id': None}
+    try:
+        return json.loads(cursor_path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError):
+        return {'last_ts': 0.0, 'last_id': None}
+
+
+def save_cursor(cursor_path: Path, cursor: dict) -> None:
+    """Atomically save cursor to disk."""
+    tmp = cursor_path.with_suffix(cursor_path.suffix + '.tmp')
+    cursor_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(json.dumps(cursor), encoding='utf-8')
+    tmp.replace(cursor_path)
+
+
+def append_new_records_to_history(*, history_path: Path, cursor_path: Path,
+                                  records: list[MemoryRecord]) -> int:
+    """Append records strictly newer than cursor.last_ts. Returns count appended."""
+    cursor = load_cursor(cursor_path)
+    new_records = [r for r in records if r.last_used > cursor['last_ts']]
+    if not new_records:
+        return 0
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    if not history_path.exists():
+        history_path.write_text(HISTORY_HEADER, encoding='utf-8')
+    chunk = render_history_entries(new_records)
+    with history_path.open('a', encoding='utf-8') as f:
+        f.write(chunk)
+    save_cursor(cursor_path, {
+        'last_ts': max(r.last_used for r in new_records),
+        'last_id': new_records[-1].id,
+    })
+    return len(new_records)

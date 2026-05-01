@@ -45,3 +45,16 @@ prose_freshness: {prose_freshness}
 ---
 *pointers: [HISTORY](HISTORY.md) · [memory](memory/) · [runtime](~/V5/claw-code-agent)*
 """
+
+HISTORY_HEADER = """# Latti — history
+*append-only chronological record of typed substrate events*
+
+"""
+
+HISTORY_ENTRY = """---
+## {date}
+
+### {time} · {kind} (id: {record_id})
+{body}
+
+"""
