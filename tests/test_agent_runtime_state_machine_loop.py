@@ -524,3 +524,46 @@ def test_evaluate_precedence_escalate_beats_replan(tmp_path):
     # escalate has higher precedence so it wins.
     assert agent._sm_state.runtime.get('last_verdict') == 'escalate', \
         agent._sm_state.runtime
+
+
+def test_bind_state_machine_session_uses_runtime_budget_cap(tmp_path):
+    """When runtime_config.budget_config.max_total_cost_usd is set, the
+    fresh state should carry that cap in budget_remaining_usd — not
+    hardcoded 0.0 (which would make BudgetExhaustionEvaluator falsely
+    fire 'timeout' on every session start)."""
+    from src.agent_types import (
+        AgentPermissions, AgentRuntimeConfig, BudgetConfig,
+        ModelConfig, ModelPricing,
+    )
+
+    agent = LocalCodingAgent(
+        model_config=ModelConfig(
+            model='gpt-4o-mini', api_key='test', base_url='http://localhost:0/unused',
+            pricing=ModelPricing(),
+        ),
+        runtime_config=AgentRuntimeConfig(
+            cwd=tmp_path,
+            permissions=AgentPermissions(allow_file_write=True, allow_shell_commands=False),
+            budget_config=BudgetConfig(max_total_cost_usd=2.50),
+        ),
+    )
+    agent._bind_state_machine_session('sm-budget-test')
+    assert agent._sm_state.budget_remaining_usd == 2.50, agent._sm_state.budget_remaining_usd
+
+
+def test_bind_state_machine_session_uses_inf_when_no_budget_cap(tmp_path):
+    """When budget cap is None (default), fresh state should carry inf so
+    BudgetExhaustionEvaluator doesn't fire 'timeout' on the first eval."""
+    agent = _make_agent(tmp_path)
+    agent._bind_state_machine_session('sm-inf-test')
+    import math
+    assert math.isinf(agent._sm_state.budget_remaining_usd), \
+        agent._sm_state.budget_remaining_usd
+
+    # Verify BudgetExhaustionEvaluator does NOT fire 'timeout' on this state.
+    runner = agent._ensure_state_machine_runner()
+    results = runner.evaluate(agent._sm_state, goal=None)
+    budget_results = [r for r in results
+                      if r.note in ('budget OK', 'budget depleted')]
+    assert all(r.verdict == 'continue' for r in budget_results), \
+        [(r.verdict, r.note) for r in budget_results]

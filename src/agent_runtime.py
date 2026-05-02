@@ -2590,9 +2590,16 @@ class LocalCodingAgent:
         if self._sm_state is not None and current_session_id == session_id:
             return
 
+        # Use the runtime_config's actual cost cap if set; otherwise treat
+        # as unlimited (float('inf')) so BudgetExhaustionEvaluator doesn't
+        # falsely fire 'timeout' on a fresh state with budget=0.0. The
+        # legacy budget check at agent_runtime.py:_check_budget remains the
+        # canonical exit; the evaluator is signal-only today.
+        cap = self.runtime_config.budget_config.max_total_cost_usd
+        budget_usd = cap if cap is not None else float('inf')
         self._sm_state = State.fresh(
             session_id=session_id,
-            budget_usd=0.0,
+            budget_usd=budget_usd,
             available_tools=tuple(self.tool_registry.keys()) if self.tool_registry else (),
         )
 
