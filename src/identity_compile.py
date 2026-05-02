@@ -395,23 +395,39 @@ def synthesize_becoming(*, active_goals: list, decisions: list[MemoryRecord],
 
 _RECORD_ID_RE = re.compile(r'\bmem_[a-z0-9_]+(?<!_)')
 
+# Substrate uses 'mem_<slug>' IDs exclusively. Natural-language refs like
+# "Decision #3" or "Goal #12" cannot point at a real record by definition,
+# so any match here is a hallucination by construction.
+_FAKE_REF_RE = re.compile(
+    r'\b(?:Decision|Goal|Task|Scar|Lesson|SOP|Record|Memory) #\d+\b'
+)
+
 
 def validate_record_ids(prose: str, valid_ids: set[str]) -> str:
-    """Mark hallucinated `mem_*` IDs in LLM prose with strikethrough.
+    """Mark hallucinated record references in LLM prose with strikethrough.
 
-    Spec §2 names this as a v1a-known limitation: gemma cites IDs that
-    don't exist in substrate (e.g. invented "Decision #23" or fabricated
-    `mem_xyz`). v1b makes them visible without trying to "fix" the prose
-    (which would require re-prompting and risk more hallucinations).
+    Two patterns marked:
+      1. mem_<slug> IDs not in valid_ids (typed-format invented IDs)
+      2. "Decision #N" / "Goal #N" / similar natural-language refs —
+         these CANNOT reference a real record because substrate uses
+         mem_* IDs exclusively, so any such phrase is a hallucination.
 
-    Wraps every cited `mem_X` not in valid_ids with `~~mem_X~~`. Valid
-    citations are unchanged.
+    Real example from generation 5 IDENTITY.md prose: gemma wrote
+    "the emphasis on data integrity in Decision #3 suggests..." with
+    no Decision #3 in substrate. v1b regex missed it (only mem_* form);
+    v1c catches both forms.
     """
-    def _maybe_mark(m: re.Match) -> str:
+    def _maybe_mark_id(m: re.Match) -> str:
         cited = m.group(0)
         return cited if cited in valid_ids else f'~~{cited}~~'
 
-    return _RECORD_ID_RE.sub(_maybe_mark, prose)
+    def _mark_fake_ref(m: re.Match) -> str:
+        # Always mark — these forms can't be valid by definition.
+        return f'~~{m.group(0)}~~'
+
+    prose = _RECORD_ID_RE.sub(_maybe_mark_id, prose)
+    prose = _FAKE_REF_RE.sub(_mark_fake_ref, prose)
+    return prose
 
 
 # ---------------------------------------------------------------------------

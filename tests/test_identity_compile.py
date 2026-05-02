@@ -821,3 +821,47 @@ def test_validate_record_ids_handles_underscores_in_ids(tmp_path):
     assert '~~mem_imaginary_long_id_xyz~~' in out
     # Also verify mem_real wasn't double-marked
     assert '~~mem_real~~' not in out
+
+
+# ---- v1c: natural-language fake-reference detection -----------------------
+
+def test_validate_record_ids_marks_decision_hash_n(tmp_path):
+    """'Decision #3' and similar natural-language refs must be marked
+    because substrate uses mem_* IDs only — these can't be real."""
+    from src.identity_compile import validate_record_ids
+    prose = ('emphasis on data integrity in Decision #3 suggests, '
+             'while Goal #12 hints at autonomy.')
+    out = validate_record_ids(prose, set())
+    assert '~~Decision #3~~' in out
+    assert '~~Goal #12~~' in out
+
+
+def test_validate_record_ids_marks_all_substrate_kinds(tmp_path):
+    """All substrate-shaped natural-language refs (Decision/Goal/Task/Scar/
+    Lesson/SOP/Record/Memory) get marked."""
+    from src.identity_compile import validate_record_ids
+    prose = ('Decision #1 Goal #2 Task #3 Scar #4 Lesson #5 SOP #6 '
+             'Record #7 Memory #8')
+    out = validate_record_ids(prose, set())
+    for n, kind in enumerate(['Decision', 'Goal', 'Task', 'Scar',
+                               'Lesson', 'SOP', 'Record', 'Memory'], start=1):
+        assert f'~~{kind} #{n}~~' in out, f'{kind} #{n} not marked: {out!r}'
+
+
+def test_validate_record_ids_does_not_mark_unrelated_hash_numbers(tmp_path):
+    """'Issue #42' or 'PR #123' or generic '#5' should NOT be marked —
+    only substrate-shaped kinds."""
+    from src.identity_compile import validate_record_ids
+    prose = 'See Issue #42 and PR #123. Reference #5 is fine too.'
+    out = validate_record_ids(prose, set())
+    assert '~~' not in out, f'unrelated #N got marked: {out!r}'
+
+
+def test_validate_record_ids_marks_both_id_and_natural_language(tmp_path):
+    """A prose containing BOTH a fake mem_* AND a fake Decision #N gets
+    both marked in one pass."""
+    from src.identity_compile import validate_record_ids
+    prose = 'Cites mem_imaginary and Decision #99 — both fabricated.'
+    out = validate_record_ids(prose, set())
+    assert '~~mem_imaginary~~' in out
+    assert '~~Decision #99~~' in out
