@@ -812,6 +812,7 @@ def _run_agent_chat_loop(
                     tui=tui if use_tui else None,
                     tui_heal=tui_heal if use_tui else None,
                     output_func=output_func,
+                    worker_supervisor_active=worker_runner is not None,
                 )
                 _cmd_result = handle_command(normalized, _cmd_ctx)
                 if _cmd_result.exit_session:

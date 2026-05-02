@@ -53,6 +53,7 @@ class CommandContext:
     tui:                Any           # tui module
     tui_heal:           Any           # tui_heal module
     output_func:        Any           # callable(str)
+    worker_supervisor_active: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +185,14 @@ def _status(args: list[str], ctx: CommandContext) -> CommandResult:
     _out(ctx, f'  turns       {ctx.turn_count}')
     _out(ctx, f'  tokens      {_fmt_tokens(ctx.cumulative_tokens)}')
     _out(ctx, f'  cost        ${ctx.cumulative_cost:.4f}')
+    state_machine_on = (
+        os.environ.get('LATTI_USE_STATE_MACHINE', '1') != '0'
+        and os.environ.get('LATTI_USE_LEGACY_LOOP', '0') != '1'
+    )
+    legacy_loop_on = os.environ.get('LATTI_USE_LEGACY_LOOP', '0') == '1'
+    _out(ctx, f'  state machine  {"on" if state_machine_on else "off"}')
+    _out(ctx, f'  supervisor     {"on" if ctx.worker_supervisor_active else "off"}')
+    _out(ctx, f'  legacy loop    {"on" if legacy_loop_on else "off"}')
 
     # context %
     pct = getattr(ctx.tui, '_state', {}).get('context_pct', 0)
