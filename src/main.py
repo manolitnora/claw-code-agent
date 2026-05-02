@@ -2092,11 +2092,14 @@ def main(argv: list[str] | None = None) -> int:
                 pass  # boot hook failure is non-fatal
         agent = _build_agent(args)
         worker_runner = None
-        if (
-            sys.stdin.isatty()
-            and sys.stdout.isatty()
-            and os.environ.get('LATTI_USE_CHAT_SUPERVISOR', '1') != '0'
-        ):
+        supervisor_mode = os.environ.get('LATTI_USE_CHAT_SUPERVISOR', '1')
+        supervisor_forced = (
+            os.environ.get('LATTI_FORCE_CHAT_SUPERVISOR') == '1'
+            or supervisor_mode.lower() == 'force'
+        )
+        supervisor_allowed = supervisor_mode != '0'
+        supervisor_terminal_ready = sys.stdin.isatty() and sys.stdout.isatty()
+        if supervisor_allowed and (supervisor_forced or supervisor_terminal_ready):
             worker_runner = _build_background_chat_worker_runner(args)
         return _run_agent_chat_loop(
             agent,

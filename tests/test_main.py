@@ -331,7 +331,11 @@ class MainCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch.dict(
                 os.environ,
-                {'LATTI_BOOT': '0', 'LATTI_USE_CHAT_SUPERVISOR': '0'},
+                {
+                    'LATTI_BOOT': '0',
+                    'LATTI_USE_CHAT_SUPERVISOR': '0',
+                    'LATTI_FORCE_CHAT_SUPERVISOR': '1',
+                },
                 clear=False,
             ):
                 with patch('src.main._build_agent', return_value=fake_agent):
@@ -351,6 +355,43 @@ class MainCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         build_worker_runner.assert_not_called()
         self.assertIsNone(run_chat_loop.call_args.kwargs['worker_runner'])
+
+    def test_agent_chat_supervisor_can_be_forced_for_non_tty_smoke(self) -> None:
+        fake_agent = SimpleNamespace()
+
+        def _worker_runner(prompt: str, resume_session_id: str | None) -> AgentRunResult:
+            return AgentRunResult(
+                final_output='unused',
+                turns=0,
+                tool_calls=0,
+                transcript=(),
+                session_id=resume_session_id,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch.dict(
+                os.environ,
+                {'LATTI_BOOT': '0', 'LATTI_FORCE_CHAT_SUPERVISOR': '1'},
+                clear=False,
+            ):
+                with patch('src.main._build_agent', return_value=fake_agent):
+                    with patch(
+                        'src.main._build_background_chat_worker_runner',
+                        return_value=_worker_runner,
+                    ) as build_worker_runner:
+                        with patch(
+                            'src.main._run_agent_chat_loop',
+                            return_value=0,
+                        ) as run_chat_loop:
+                            with patch('sys.stdin.isatty', return_value=False):
+                                with patch('sys.stdout.isatty', return_value=False):
+                                    exit_code = main(
+                                        ['agent-chat', 'hello', '--cwd', tmp_dir]
+                                    )
+
+        self.assertEqual(exit_code, 0)
+        build_worker_runner.assert_called_once()
+        self.assertIs(run_chat_loop.call_args.kwargs['worker_runner'], _worker_runner)
 
     def test_parser_accepts_remote_runtime_commands(self) -> None:
         parser = build_parser()
