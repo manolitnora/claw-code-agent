@@ -1,1 +1,311 @@
-#!/usr/bin/env python3\n\"\"\"\nTests for EdgeSystemLinter.\n\"\"\"\n\nimport pytest\nimport sys\nimport os\n\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))\n\nfrom edge_system_linter import (\n    EdgeSystemLinter,\n    EdgeSystemLinterReport,\n    Severity,\n    lint_file,\n    lint_code\n)\n\n\nclass TestEdgeSystemLinter:\n    \"\"\"Test EdgeSystemLinter.\"\"\"\n    \n    def test_lint_code_with_hook_import(self):\n        \"\"\"Test linting code with hook import.\"\"\"\n        code = \"\"\"\nfrom edge_system_integration_v2 import get_edge_hook_v2\n\nhook = get_edge_hook_v2()\ntask = {\"id\": \"task_1\", \"description\": \"test\"}\nupgraded = hook.process_task(task)\n\"\"\"\n        linter = EdgeSystemLinter()\n        issues = linter.lint_code(code)\n        \n        # Should have no errors\n        errors = [i for i in issues if i.severity == Severity.ERROR]\n        assert len(errors) == 0\n    \n    def test_lint_code_missing_hook_import(self):\n        \"\"\"Test linting code without hook import.\"\"\"\n        code = \"\"\"\ndef process_task(task):\n    # Process task without using hook\n    return task\n\"\"\"\n        linter = EdgeSystemLinter()\n        issues = linter.lint_code(code)\n        \n        # Should have warning about missing hook\n        warnings = [i for i in issues if i.severity == Severity.WARNING]\n        assert any('MISSING_HOOK_IMPORT' in i.rule for i in warnings)\n    \n    def test_lint_code_missing_result_recording(self):\n        \"\"\"Test linting code without result recording.\"\"\"\n        code = \"\"\"\nfrom edge_system_integration_v2 import get_edge_hook_v2\n\nhook = get_edge_hook_v2()\n\ndef process_and_execute(task):\n    upgraded = hook.process_task(task)\n    # Execute but don't record result\n    return upgraded\n\"\"\"\n        linter = EdgeSystemLinter()\n        issues = linter.lint_code(code)\n        \n        # Should have warning about missing result recording\n        warnings = [i for i in issues if i.severity == Severity.WARNING]\n        assert any('MISSING_RESULT_RECORDING' in i.rule for i in warnings)\n    \n    def test_lint_code_with_result_recording(self):\n        \"\"\"Test linting code with result recording.\"\"\"\n        code = \"\"\"\nfrom edge_system_integration_v2 import get_edge_hook_v2\n\nhook = get_edge_hook_v2()\n\ndef process_and_execute(task):\n    upgraded = hook.process_task(task)\n    # Execute task\n    success = True\n    quality = 85\n    cost = 2000\n    \n    # Record result\n    hook.record_result(\n        task_id=task['id'],\n        model=upgraded['model'],\n        success=success,\n        quality=quality,\n        cost=cost\n    )\n    return upgraded\n\"\"\"\n        linter = EdgeSystemLinter()\n        issues = linter.lint_code(code)\n        \n        # Should have no errors\n        errors = [i for i in issues if i.severity == Severity.ERROR]\n        assert len(errors) == 0\n    \n    def test_lint_code_missing_cost_tracking(self):\n        \"\"\"Test linting code without cost tracking.\"\"\"\n        code = \"\"\"\nfrom edge_system_integration_v2 import get_edge_hook_v2\n\nhook = get_edge_hook_v2()\n\ndef record_result(task_id, model, success, quality):\n    # Missing cost parameter\n    hook.record_result(\n        task_id=task_id,\n        model=model,\n        success=success,\n        quality=quality\n    )\n\"\"\"\n        linter = EdgeSystemLinter()\n        issues = linter.lint_code(code)\n        \n        # Should have warning about missing cost tracking\n        warnings = [i for i in issues if i.severity == Severity.WARNING]\n        assert any('MISSING_COST_TRACKING' in i.rule for i in warnings)\n    \n    def test_lint_code_missing_failure_handling(self):\n        \"\"\"Test linting code without failure handling.\"\"\"\n        code = \"\"\"\nfrom edge_system_integration_v2 import get_edge_hook_v2\n\nhook = get_edge_hook_v2()\n\ndef process_task(task):\n    upgraded = hook.process_task(task)\n    # Execute and record but don't handle failures\n    hook.record_result(\n        task_id=task['id'],\n        model=upgraded['model'],\n        success=False,\n        quality=20,\n        cost=1000\n    )\n\"\"\"\n        linter = EdgeSystemLinter()\n        issues = linter.lint_code(code)\n        \n        # Should have info about missing failure handling\n        infos = [i for i in issues if i.severity == Severity.INFO]\n        assert any('MISSING_FAILURE_HANDLING' in i.rule for i in infos)\n    \n    def test_lint_code_with_failure_handling(self):\n        \"\"\"Test linting code with failure handling.\"\"\"\n        code = \"\"\"\nfrom edge_system_integration_v2 import get_edge_hook_v2\n\nhook = get_edge_hook_v2()\n\ndef process_task(task):\n    upgraded = hook.process_task(task)\n    success = execute_task(upgraded)\n    \n    hook.record_result(\n        task_id=task['id'],\n        model=upgraded['model'],\n        success=success,\n        quality=50,\n        cost=1000\n    )\n    \n    if not success:\n        strategy, recommendation = hook.get_recovery_strategy(task['id'])\n        handle_recovery(strategy, recommendation)\n\ndef handle_recovery(strategy, recommendation):\n    pass\n\ndef execute_task(task):\n    return True\n\"\"\"\n        linter = EdgeSystemLinter()\n        issues = linter.lint_code(code)\n        \n        # Should have no errors\n        errors = [i for i in issues if i.severity == Severity.ERROR]\n        assert len(errors) == 0\n    \n    def test_lint_code_missing_optimization(self):\n        \"\"\"Test linting code without optimization.\"\"\"\n        code = \"\"\"\nfrom edge_system_integration_v2 import get_edge_hook_v2\n\nhook = get_edge_hook_v2()\n\ndef process_tasks(tasks):\n    for task in tasks:\n        upgraded = hook.process_task(task)\n        # Process but never optimize\n\"\"\"\n        linter = EdgeSystemLinter()\n        issues = linter.lint_code(code)\n        \n        # Should have info about missing optimization\n        infos = [i for i in issues if i.severity == Severity.INFO]\n        assert any('MISSING_OPTIMIZATION' in i.rule for i in infos)\n    \n    def test_lint_code_with_optimization(self):\n        \"\"\"Test linting code with optimization.\"\"\"\n        code = \"\"\"\nfrom edge_system_integration_v2 import get_edge_hook_v2\n\nhook = get_edge_hook_v2()\n\ndef process_tasks(tasks):\n    for task in tasks:\n        upgraded = hook.process_task(task)\n        hook.record_result(\n            task_id=task['id'],\n            model=upgraded['model'],\n            success=True,\n            quality=85,\n            cost=2000\n        )\n    \n    # Periodic optimization\n    results = hook.optimize()\n    return results\n\"\"\"\n        linter = EdgeSystemLinter()\n        issues = linter.lint_code(code)\n        \n        # Should have no errors\n        errors = [i for i in issues if i.severity == Severity.ERROR]\n        assert len(errors) == 0\n\n\nclass TestEdgeSystemLinterReport:\n    \"\"\"Test EdgeSystemLinterReport.\"\"\"\n    \n    def test_report_summary(self):\n        \"\"\"Test report summary generation.\"\"\"\n        from edge_system_linter import LintIssue\n        \n        issues = [\n            LintIssue(\n                severity=Severity.ERROR,\n                rule=\"TEST_ERROR\",\n                message=\"Test error\",\n                line=1\n            ),\n            LintIssue(\n                severity=Severity.WARNING,\n                rule=\"TEST_WARNING\",\n                message=\"Test warning\",\n                line=2\n            ),\n            LintIssue(\n                severity=Severity.INFO,\n                rule=\"TEST_INFO\",\n                message=\"Test info\",\n                line=3\n            )\n        ]\n        \n        report = EdgeSystemLinterReport(issues)\n        summary = report.summary()\n        \n        assert \"Total issues: 3\" in summary\n        assert \"ERROR: 1\" in summary\n        assert \"WARNING: 1\" in summary\n        assert \"INFO: 1\" in summary\n    \n    def test_report_json(self):\n        \"\"\"Test JSON report generation.\"\"\"\n        from edge_system_linter import LintIssue\n        \n        issues = [\n            LintIssue(\n                severity=Severity.ERROR,\n                rule=\"TEST_ERROR\",\n                message=\"Test error\",\n                line=1\n            )\n        ]\n        \n        report = EdgeSystemLinterReport(issues)\n        json_report = report.json()\n        \n        assert json_report['total'] == 1\n        assert json_report['by_severity']['ERROR'] == 1\n        assert len(json_report['issues']) == 1\n\n\nclass TestLintFunctions:\n    \"\"\"Test module-level lint functions.\"\"\"\n    \n    def test_lint_code_function(self):\n        \"\"\"Test lint_code function.\"\"\"\n        code = \"\"\"\nfrom edge_system_integration_v2 import get_edge_hook_v2\nhook = get_edge_hook_v2()\n\"\"\"\n        issues, report = lint_code(code)\n        \n        assert isinstance(issues, list)\n        assert isinstance(report, str)\n        assert \"EDGE SYSTEM LINTER REPORT\" in report\n\n\nif __name__ == \"__main__\":\n    pytest.main([__file__, \"-v\"])\n
+#!/usr/bin/env python3
+"""
+Tests for EdgeSystemLinter.
+"""
+
+import pytest
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from edge_system_linter import (
+    EdgeSystemLinter,
+    EdgeSystemLinterReport,
+    Severity,
+    lint_file,
+    lint_code
+)
+
+
+class TestEdgeSystemLinter:
+    """Test EdgeSystemLinter."""
+    
+    def test_lint_code_with_hook_import(self):
+        """Test linting code with hook import."""
+        code = """
+from edge_system_integration_v2 import get_edge_hook_v2
+
+hook = get_edge_hook_v2()
+task = {"id": "task_1", "description": "test"}
+upgraded = hook.process_task(task)
+"""
+        linter = EdgeSystemLinter()
+        issues = linter.lint_code(code)
+        
+        # Should have no errors
+        errors = [i for i in issues if i.severity == Severity.ERROR]
+        assert len(errors) == 0
+    
+    def test_lint_code_missing_hook_import(self):
+        """Test linting code without hook import."""
+        code = """
+def process_task(task):
+    # Process task without using hook
+    return task
+"""
+        linter = EdgeSystemLinter()
+        issues = linter.lint_code(code)
+        
+        # Should have warning about missing hook
+        warnings = [i for i in issues if i.severity == Severity.WARNING]
+        assert any('MISSING_HOOK_IMPORT' in i.rule for i in warnings)
+    
+    def test_lint_code_missing_result_recording(self):
+        """Test linting code without result recording."""
+        code = """
+from edge_system_integration_v2 import get_edge_hook_v2
+
+hook = get_edge_hook_v2()
+
+def process_and_execute(task):
+    upgraded = hook.process_task(task)
+    # Execute but don't record result
+    return upgraded
+"""
+        linter = EdgeSystemLinter()
+        issues = linter.lint_code(code)
+        
+        # Should have warning about missing result recording
+        warnings = [i for i in issues if i.severity == Severity.WARNING]
+        assert any('MISSING_RESULT_RECORDING' in i.rule for i in warnings)
+    
+    def test_lint_code_with_result_recording(self):
+        """Test linting code with result recording."""
+        code = """
+from edge_system_integration_v2 import get_edge_hook_v2
+
+hook = get_edge_hook_v2()
+
+def process_and_execute(task):
+    upgraded = hook.process_task(task)
+    # Execute task
+    success = True
+    quality = 85
+    cost = 2000
+    
+    # Record result
+    hook.record_result(
+        task_id=task['id'],
+        model=upgraded['model'],
+        success=success,
+        quality=quality,
+        cost=cost
+    )
+    return upgraded
+"""
+        linter = EdgeSystemLinter()
+        issues = linter.lint_code(code)
+        
+        # Should have no errors
+        errors = [i for i in issues if i.severity == Severity.ERROR]
+        assert len(errors) == 0
+    
+    def test_lint_code_missing_cost_tracking(self):
+        """Test linting code without cost tracking."""
+        code = """
+from edge_system_integration_v2 import get_edge_hook_v2
+
+hook = get_edge_hook_v2()
+
+def record_result(task_id, model, success, quality):
+    # Missing cost parameter
+    hook.record_result(
+        task_id=task_id,
+        model=model,
+        success=success,
+        quality=quality
+    )
+"""
+        linter = EdgeSystemLinter()
+        issues = linter.lint_code(code)
+        
+        # Should have warning about missing cost tracking
+        warnings = [i for i in issues if i.severity == Severity.WARNING]
+        assert any('MISSING_COST_TRACKING' in i.rule for i in warnings)
+    
+    def test_lint_code_missing_failure_handling(self):
+        """Test linting code without failure handling."""
+        code = """
+from edge_system_integration_v2 import get_edge_hook_v2
+
+hook = get_edge_hook_v2()
+
+def process_task(task):
+    upgraded = hook.process_task(task)
+    # Execute and record but don't handle failures
+    hook.record_result(
+        task_id=task['id'],
+        model=upgraded['model'],
+        success=False,
+        quality=20,
+        cost=1000
+    )
+"""
+        linter = EdgeSystemLinter()
+        issues = linter.lint_code(code)
+        
+        # Should have info about missing failure handling
+        infos = [i for i in issues if i.severity == Severity.INFO]
+        assert any('MISSING_FAILURE_HANDLING' in i.rule for i in infos)
+    
+    def test_lint_code_with_failure_handling(self):
+        """Test linting code with failure handling."""
+        code = """
+from edge_system_integration_v2 import get_edge_hook_v2
+
+hook = get_edge_hook_v2()
+
+def process_task(task):
+    upgraded = hook.process_task(task)
+    success = execute_task(upgraded)
+    
+    hook.record_result(
+        task_id=task['id'],
+        model=upgraded['model'],
+        success=success,
+        quality=50,
+        cost=1000
+    )
+    
+    if not success:
+        strategy, recommendation = hook.get_recovery_strategy(task['id'])
+        handle_recovery(strategy, recommendation)
+
+def handle_recovery(strategy, recommendation):
+    pass
+
+def execute_task(task):
+    return True
+"""
+        linter = EdgeSystemLinter()
+        issues = linter.lint_code(code)
+        
+        # Should have no errors
+        errors = [i for i in issues if i.severity == Severity.ERROR]
+        assert len(errors) == 0
+    
+    def test_lint_code_missing_optimization(self):
+        """Test linting code without optimization."""
+        code = """
+from edge_system_integration_v2 import get_edge_hook_v2
+
+hook = get_edge_hook_v2()
+
+def process_tasks(tasks):
+    for task in tasks:
+        upgraded = hook.process_task(task)
+        # Process but never optimize
+"""
+        linter = EdgeSystemLinter()
+        issues = linter.lint_code(code)
+        
+        # Should have info about missing optimization
+        infos = [i for i in issues if i.severity == Severity.INFO]
+        assert any('MISSING_OPTIMIZATION' in i.rule for i in infos)
+    
+    def test_lint_code_with_optimization(self):
+        """Test linting code with optimization."""
+        code = """
+from edge_system_integration_v2 import get_edge_hook_v2
+
+hook = get_edge_hook_v2()
+
+def process_tasks(tasks):
+    for task in tasks:
+        upgraded = hook.process_task(task)
+        hook.record_result(
+            task_id=task['id'],
+            model=upgraded['model'],
+            success=True,
+            quality=85,
+            cost=2000
+        )
+    
+    # Periodic optimization
+    results = hook.optimize()
+    return results
+"""
+        linter = EdgeSystemLinter()
+        issues = linter.lint_code(code)
+        
+        # Should have no errors
+        errors = [i for i in issues if i.severity == Severity.ERROR]
+        assert len(errors) == 0
+
+
+class TestEdgeSystemLinterReport:
+    """Test EdgeSystemLinterReport."""
+    
+    def test_report_summary(self):
+        """Test report summary generation."""
+        from edge_system_linter import LintIssue
+        
+        issues = [
+            LintIssue(
+                severity=Severity.ERROR,
+                rule="TEST_ERROR",
+                message="Test error",
+                line=1
+            ),
+            LintIssue(
+                severity=Severity.WARNING,
+                rule="TEST_WARNING",
+                message="Test warning",
+                line=2
+            ),
+            LintIssue(
+                severity=Severity.INFO,
+                rule="TEST_INFO",
+                message="Test info",
+                line=3
+            )
+        ]
+        
+        report = EdgeSystemLinterReport(issues)
+        summary = report.summary()
+        
+        assert "Total issues: 3" in summary
+        assert "ERROR: 1" in summary
+        assert "WARNING: 1" in summary
+        assert "INFO: 1" in summary
+    
+    def test_report_json(self):
+        """Test JSON report generation."""
+        from edge_system_linter import LintIssue
+        
+        issues = [
+            LintIssue(
+                severity=Severity.ERROR,
+                rule="TEST_ERROR",
+                message="Test error",
+                line=1
+            )
+        ]
+        
+        report = EdgeSystemLinterReport(issues)
+        json_report = report.json()
+        
+        assert json_report['total'] == 1
+        assert json_report['by_severity']['ERROR'] == 1
+        assert len(json_report['issues']) == 1
+
+
+class TestLintFunctions:
+    """Test module-level lint functions."""
+    
+    def test_lint_code_function(self):
+        """Test lint_code function."""
+        code = """
+from edge_system_integration_v2 import get_edge_hook_v2
+hook = get_edge_hook_v2()
+"""
+        issues, report = lint_code(code)
+        
+        assert isinstance(issues, list)
+        assert isinstance(report, str)
+        assert "EDGE SYSTEM LINTER REPORT" in report
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
