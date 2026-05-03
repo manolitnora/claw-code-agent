@@ -14,7 +14,7 @@ Mirrors the npm ``src/services/compact/compact.ts`` and
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .agent_context_usage import estimate_tokens
@@ -359,8 +359,17 @@ def compact_conversation(
             error=ERROR_NOT_ENOUGH_MESSAGES,
         )
 
-    candidates = session.messages[prefix_count:compact_end]
+    candidates_with_anchors = session.messages[prefix_count:compact_end]
     preserved_tail = list(session.messages[compact_end:])
+
+    # Anchor sinks: messages flagged metadata['anchor']=True are excluded
+    # from the summarizer input AND survive the rebuild verbatim. Mission
+    # directives, hard user corrections, and load-bearing decisions get
+    # the same persistent-attention guarantee that DeepSeek V4's sink
+    # logits provide at the transformer layer. Tested by
+    # tests/test_compact_anchors.py.
+    anchored = [m for m in candidates_with_anchors if _is_anchor(m)]
+    candidates = [m for m in candidates_with_anchors if not _is_anchor(m)]
 
     if not candidates:
         return CompactionResult(
@@ -424,10 +433,13 @@ def compact_conversation(
         metadata={'kind': 'compact_summary', 'is_compact_summary': True},
     )
 
-    # Replace session messages in-place
+    # Replace session messages in-place. Anchors (if any) sit AFTER the
+    # boundary+summary and BEFORE the preserved tail, so they read like
+    # persistent system reminders that survive every compaction cycle.
     session.messages = (
         session.messages[:prefix_count]
         + [boundary, summary_msg]
+        + anchored
         + preserved_tail
     )
 
@@ -448,6 +460,24 @@ def compact_conversation(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _is_anchor(msg: AgentMessage) -> bool:
+    """True if a message is marked as an anchor sink (never compacted)."""
+    return msg.metadata.get('anchor') is True
+
+
+def mark_as_anchor(msg: AgentMessage) -> AgentMessage:
+    """Return a copy of `msg` with metadata['anchor']=True.
+
+    Use for mission directives, persistent user corrections, and
+    load-bearing decisions that must survive every compaction. Anchors
+    are excluded from the summarizer input and re-spliced verbatim into
+    the post-compact session immediately after the summary.
+    """
+    new_meta = dict(msg.metadata)
+    new_meta['anchor'] = True
+    return replace(msg, metadata=new_meta)
+
 
 def _build_boundary(note: str) -> AgentMessage:
     """Create a compact-boundary system message."""
