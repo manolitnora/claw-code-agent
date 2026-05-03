@@ -104,6 +104,43 @@ except Exception:
     _sanitize = None  # type: ignore[assignment]
 
 
+def _tui_error_log_path() -> str:
+    """Where _log_swallowed appends entries.
+
+    Override with CLAW_TUI_ERROR_LOG. Defaults under XDG_CACHE_HOME (or
+    ~/.cache) so the agent has a stable local log even outside latti.
+    """
+    override = os.environ.get('CLAW_TUI_ERROR_LOG')
+    if override:
+        return override
+    base = os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache')
+    return os.path.join(base, 'claw-code-agent', 'tui-errors.log')
+
+
+def _log_swallowed(where: str, exc: BaseException) -> None:
+    """Best-effort log for swallowed exceptions in TUI render/heal paths.
+
+    Constitutional rule 4: never silently swallow errors. The TUI deliberately
+    swallows exceptions from sanitize/heal so a render bug never crashes the
+    agent loop, but the swallow must still leave a debuggable trail.
+
+    Never raises. Writing to the log file failing is itself swallowed —
+    logging must never crash the TUI it is trying to instrument.
+    """
+    try:
+        import time
+        import traceback
+        path = _tui_error_log_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'a', encoding='utf-8') as fh:
+            ts = time.strftime('%Y-%m-%d %H:%M:%S')
+            fh.write(f'[{ts}] {where}: {type(exc).__name__}: {exc}\n')
+            fh.write(traceback.format_exc())
+            fh.write('\n')
+    except Exception:
+        pass
+
+
 def _w(s: str) -> None:
     sys.stdout.write(s)
     sys.stdout.flush()
@@ -663,8 +700,8 @@ def tool_result(name: str, summary: str) -> None:
     if _sanitize is not None:
         try:
             summary = _sanitize(summary)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_swallowed('tui.tool_result.sanitize', exc)
 
     # Count lines for expand hint
     n_lines = summary.count('\n') + 1
@@ -689,8 +726,8 @@ def tool_error(name: str, error: str) -> None:
     if _sanitize is not None:
         try:
             error = _sanitize(error)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_swallowed('tui.tool_error.sanitize', exc)
     _w(f'{RED}  ⎿ {_truncate_visible(error, 120)}{RESET}\n')
     _w(f'{DARK_GRAY}  {"─" * (_cols() - 2)}{RESET}\n')
 

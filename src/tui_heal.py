@@ -287,8 +287,12 @@ def heal() -> None:
         # Step 4: cursor to content area
         sys.stdout.write(f'\033[{content_bottom};1H')
         sys.stdout.flush()
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            from . import tui as _tui
+            _tui._log_swallowed('tui_heal.heal', exc)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
