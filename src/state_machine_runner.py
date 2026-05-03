@@ -148,6 +148,33 @@ class StateMachineRunner:
             new_state = state.next_turn(obs)
             return obs, new_state
 
+        # Pre-dispatch validation (anchor-derived block-severity).
+        # Validators with a pre_validate(action) method get one chance
+        # to block before the operator executes. Returning a
+        # ValidationResult with severity='block' substitutes an error
+        # Observation and skips operator execution — for bash actions
+        # this means the command NEVER runs. None means "no opinion;
+        # proceed". Static walls already handled above by
+        # violates_constitutional_wall; this is the session-aware tier.
+        pre_block = self._run_pre_validators(action)
+        if pre_block is not None:
+            obs = Observation(
+                action_id=action.id, kind='error',
+                payload={
+                    'error': 'blocked by pre-dispatch validator',
+                    'blocked': True,
+                    'blocking_validations': [pre_block.to_dict()],
+                },
+            )
+            self._log_decision(
+                state=state, action=action, observation=obs,
+                rationale=rationale or f'pre_dispatch_block by {pre_block.checks[0].name if pre_block.checks else "validator"}',
+                rejected_alternatives=rejected_alternatives,
+                decided_by=decided_by,
+                validation_results=(pre_block,),
+            )
+            return obs, state.next_turn(obs)
+
         obs = op.execute(action, state)
 
         # Run validators. Any 'block'-severity result replaces the Observation
@@ -276,6 +303,30 @@ class StateMachineRunner:
             score=0.0, verdict='timeout',
             note=f'max_turns={max_turns} reached without terminal verdict',
         )
+
+    def _run_pre_validators(self, action: Action) -> ValidationResult | None:
+        """Invoke every validator's pre_validate (if it has one).
+
+        Returns the FIRST block-severity result (deterministic order by
+        registration). Validators without pre_validate are skipped.
+        Validator raises are swallowed (defensive); the runner must
+        never crash on validator implementation errors.
+        """
+        for v in self._validators:
+            pv = getattr(v, 'pre_validate', None)
+            if pv is None:
+                continue
+            try:
+                if not v.applies_to(action):
+                    continue
+                result = pv(action)
+            except Exception:  # pragma: no cover — defensive
+                continue
+            if result is None:
+                continue
+            if result.severity == 'block':
+                return result
+        return None
 
     def _run_validators(
         self, action: Action, observation: Observation,

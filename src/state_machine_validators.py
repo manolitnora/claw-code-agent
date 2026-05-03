@@ -122,6 +122,27 @@ class BudgetValidator:
         )
 
 
+# High-risk command patterns. A bash command matching one of these AND
+# overlapping a NEVER anchor's tokens triggers PRE-DISPATCH BLOCK
+# (severity='block') in AnchorViolationValidator.pre_validate. Soft
+# overlaps without a high-risk pattern fall through to post-execute
+# warn. Static-only patterns (no anchor required) live in
+# violates_constitutional_wall — that surface is anchor-agnostic.
+_HIGH_RISK_BASH_PATTERNS = (
+    # rm -rf rooted at production-style paths (anything outside /tmp,
+    # /var/folders, /private/var/folders, ~/scratch, etc.). We match
+    # paths starting with /var/lib, /var/log, /etc, /home, /Users,
+    # /opt, /System, /Library — common live-data roots.
+    re.compile(r'\brm\s+(?:-[a-zA-Z]+\s+)*-?[a-zA-Z]*r[a-zA-Z]*[fF][a-zA-Z]*\s+/(?:var/lib|var/log|etc|home|Users|opt|System|Library)\b'),
+    # git push --force / -f targeting main or master.
+    re.compile(r'\bgit\s+push\s+(?:--force|-f|-+force-with-lease)\b[^|;&]*\b(?:main|master)\b'),
+    # chmod 777 / chmod a+rwx (universal write+exec is rarely intended)
+    re.compile(r'\bchmod\s+(?:777|a\+rwx)\b'),
+    # dd writing to a raw device path (overwrites disks)
+    re.compile(r'\bdd\s+[^|;&]*\bof=/dev/(?!null|stdout|stderr|tty\b)'),
+)
+
+
 class AnchorViolationValidator:
     """Surfaces violations of NEVER: anchored constraints on bash tool calls.
 
@@ -168,6 +189,76 @@ class AnchorViolationValidator:
         if action.kind != 'tool_call':
             return False
         return action.payload.get('tool_name') == 'bash'
+
+    def pre_validate(self, action: Action) -> ValidationResult | None:
+        """Pre-dispatch block check for constitution-grade violations.
+
+        Returns:
+          - ValidationResult(severity='block') when the bash command
+            matches BOTH a HIGH_RISK_BASH_PATTERN and a NEVER anchor
+            whose tokens overlap the command (>=_MIN_OVERLAP).
+          - None for everything else — including high-risk-no-anchor
+            (violates_constitutional_wall handles that surface) and
+            soft-anchor-no-high-risk (post-execute validate emits warn).
+
+        The runner calls this before op.execute. Block-severity result
+        causes run_one_step to return an error Observation without
+        running the operator — the bash command never executes.
+        """
+        if not self.applies_to(action):
+            return None
+
+        try:
+            anchors = self._anchors_provider() or []
+        except Exception:
+            return None  # provider failure → no block
+
+        command = ''
+        args = action.payload.get('arguments')
+        if isinstance(args, dict):
+            cmd = args.get('command')
+            if isinstance(cmd, str):
+                command = cmd
+        if not command:
+            return None
+
+        # Step 1: command must match a high-risk pattern.
+        high_risk_hit: re.Pattern | None = None
+        for pat in _HIGH_RISK_BASH_PATTERNS:
+            if pat.search(command):
+                high_risk_hit = pat
+                break
+        if high_risk_hit is None:
+            return None
+
+        # Step 2: at least one NEVER anchor must overlap the command.
+        cmd_tokens = self._tokens(command)
+        for anchor_text in anchors:
+            if not isinstance(anchor_text, str):
+                continue
+            for match in self._NEVER_PREFIX_RE.finditer(anchor_text):
+                constraint = match.group(1).strip()
+                if not constraint:
+                    continue
+                anchor_tokens = self._tokens(constraint)
+                overlap = anchor_tokens & cmd_tokens
+                if len(overlap) >= self._MIN_OVERLAP:
+                    check = ValidationCheck(
+                        name='anchor_pre_dispatch_block',
+                        passed=False,
+                        evidence=(
+                            f'high-risk pattern matched ({high_risk_hit.pattern!r}); '
+                            f'NEVER: {constraint!r} overlap={sorted(overlap)}'
+                        ),
+                    )
+                    return ValidationResult(
+                        action_id=action.id,
+                        passed=False,
+                        checks=(check,),
+                        severity='block',
+                    )
+
+        return None
 
     def validate(self, action: Action, observation: Observation) -> ValidationResult:
         try:

@@ -1582,7 +1582,17 @@ class LocalCodingAgent:
                     ),
                 }
                 if self._sm_state is not None:
-                    self._sm_state = self._sm_state.with_runtime(runtime_context)
+                    # MERGE not REPLACE: last_verdict/last_error_text are threaded
+                    # by _evaluate_state_after_step on every step. with_runtime
+                    # used to wipe the dict each loop iteration, defeating the
+                    # verdict-driven controller behavior.
+                    merged_runtime = (
+                        dict(self._sm_state.runtime)
+                        if isinstance(self._sm_state.runtime, dict)
+                        else {}
+                    )
+                    merged_runtime.update(runtime_context)
+                    self._sm_state = self._sm_state.with_runtime(merged_runtime)
                 decision = controller.pick(self._sm_state)
                 if decision is None:
                     result = AgentRunResult(
@@ -2609,7 +2619,43 @@ class LocalCodingAgent:
             # so verdict-driven controller behavior is one-shot rather
             # than persistent across turns.
             self._thread_eval_verdict_to_state(winning_verdict)
+            # On 'replan', also surface the actual last-observation error
+            # text so the controller's reminder injection can be specific
+            # rather than generic. Cleared on subsequent non-error turns
+            # by the same one-shot mechanism.
+            if winning_verdict == 'replan' and self._sm_state is not None:
+                err_text = self._extract_last_error_text()
+                if err_text:
+                    self._thread_runtime_field('last_error_text', err_text)
         return events
+
+    def _extract_last_error_text(self) -> str:
+        """Pull a human-readable error string out of the most recent
+        Observation when its kind=='error'. Returns empty string if no
+        observation, no error, or no readable error field.
+        """
+        if self._sm_state is None or self._sm_state.last_observation is None:
+            return ''
+        obs = self._sm_state.last_observation
+        if obs.kind != 'error':
+            return ''
+        payload = obs.payload if isinstance(obs.payload, dict) else {}
+        for key in ('error', 'message', 'reason', 'detail'):
+            v = payload.get(key)
+            if isinstance(v, str) and v.strip():
+                return v
+        return ''
+
+    def _thread_runtime_field(self, field_name: str, value: object) -> None:
+        """Write an arbitrary key into _sm_state.runtime via dataclass.replace."""
+        if self._sm_state is None:
+            return
+        from dataclasses import replace as _dc_replace
+        current_runtime = (
+            dict(self._sm_state.runtime) if isinstance(self._sm_state.runtime, dict) else {}
+        )
+        current_runtime[field_name] = value
+        self._sm_state = _dc_replace(self._sm_state, runtime=current_runtime)
 
     def state_machine_memory(self):
         """Lazy-construct and return a LattiMemoryStore for ~/.latti/memory.

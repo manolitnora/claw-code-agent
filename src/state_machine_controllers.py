@@ -30,28 +30,38 @@ ActionFactory = Callable[[State, 'Goal | None'], 'Action | None']
 Rule = tuple[Predicate, ActionFactory, str]  # last element is the rule's name
 
 
-_REPLAN_REMINDER_TEXT = (
-    '<system-reminder>\n'
+_REPLAN_REMINDER_BASE = (
     'STATE-LAYER NOTICE: The state-machine evaluator flagged the previous '
     'step with verdict=replan. The last action produced an error '
     'observation. Reconsider your approach before retrying — diagnose the '
-    'failure, then choose a different tool or argument shape.\n'
-    '</system-reminder>'
+    'failure, then choose a different tool or argument shape.'
 )
 
 
-def _inject_replan_reminder(payload: dict) -> dict:
+def _inject_replan_reminder(payload: dict, last_error_text: str = '') -> dict:
     """Return a copy of `payload` with a State-layer replan reminder
     appended to the messages list.
 
-    The reminder is a user-role system-reminder block, idempotent in
-    shape — appending it twice would just produce duplicate reminders,
-    not change semantics. The agent_runtime is responsible for clearing
-    runtime['last_verdict'] after the LLM call so the next turn doesn't
-    re-inject (one-shot consumption).
+    The reminder includes the actual last-observation error text when
+    available. Without it (e.g., older callers that don't thread it),
+    the reminder degrades gracefully to its base form. One-shot
+    consumption is the agent_runtime's job — see
+    _evaluate_state_after_step's verdict threading.
     """
+    body = _REPLAN_REMINDER_BASE
+    if last_error_text:
+        # Truncate aggressively — the model only needs the failure
+        # signature, not a full traceback in the prompt.
+        snippet = last_error_text.strip()
+        if len(snippet) > 500:
+            snippet = snippet[:497] + '...'
+        body = (
+            f'{_REPLAN_REMINDER_BASE}\n\n'
+            f'Specific failure: {snippet}'
+        )
+    reminder = f'<system-reminder>\n{body}\n</system-reminder>'
     messages = list(payload.get('messages') or [])
-    messages.append({'role': 'user', 'content': _REPLAN_REMINDER_TEXT})
+    messages.append({'role': 'user', 'content': reminder})
     return {**payload, 'messages': messages}
 
 
@@ -232,7 +242,10 @@ class RuntimeLoopController:
 
             rationale = 'rule_fired: runtime_query_model'
             if verdict == 'replan':
-                payload = _inject_replan_reminder(payload)
+                last_error_text = runtime.get('last_error_text', '')
+                if not isinstance(last_error_text, str):
+                    last_error_text = ''
+                payload = _inject_replan_reminder(payload, last_error_text)
                 rationale = 'rule_fired: runtime_query_model_with_replan_reminder'
 
             return PolicyDecision(
