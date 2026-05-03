@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -7,6 +8,26 @@ from .agent_types import UsageStats
 
 JSONDict = dict[str, Any]
 MAX_MUTATION_HISTORY = 8
+
+# Compiled once: load-bearing prefixes that auto-anchor a user message.
+# Must appear at the start of a line (^ in MULTILINE mode), case-insensitive,
+# followed by a colon. Tested by tests/test_append_user_auto_anchor.py.
+_AUTO_ANCHOR_PREFIXES = re.compile(
+    r'(?im)^(MISSION|CORRECTION|IMPORTANT|NEVER|ALWAYS):'
+)
+
+
+def _should_auto_anchor(content: str) -> bool:
+    """True if the message starts a line with a load-bearing prefix.
+
+    These messages (mission directives, hard corrections, must/never
+    constraints) are exactly the content that compounds-blurs across
+    successive compactions if treated as routine. Auto-anchoring keeps
+    them verbatim across every compaction.
+    """
+    if not content:
+        return False
+    return _AUTO_ANCHOR_PREFIXES.search(content) is not None
 
 
 @dataclass(frozen=True)
@@ -291,6 +312,14 @@ class AgentSessionState:
         metadata: dict[str, Any] | None = None,
         message_id: str | None = None,
     ) -> None:
+        # Auto-anchor heuristic: messages starting a line with
+        # MISSION:/CORRECTION:/IMPORTANT:/NEVER:/ALWAYS: are load-bearing
+        # context that should never compound-blur through compaction.
+        # Caller can override in either direction by setting
+        # metadata['anchor'] explicitly.
+        merged_meta = dict(metadata or {})
+        if 'anchor' not in merged_meta and _should_auto_anchor(content):
+            merged_meta['anchor'] = True
         self.messages.append(
             AgentMessage(
                 role='user',
@@ -299,7 +328,7 @@ class AgentSessionState:
                 metadata=_initialize_message_metadata(
                     role='user',
                     message_id=message_id or f'user_{len(self.messages)}',
-                    metadata=dict(metadata or {}),
+                    metadata=merged_meta,
                 ),
                 message_id=message_id,
             )
