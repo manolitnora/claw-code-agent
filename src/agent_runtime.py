@@ -2484,6 +2484,7 @@ class LocalCodingAgent:
         )
         from .state_machine_runner import StateMachineRunner
         from .state_machine_validators import (
+            AnchorViolationValidator,
             NonEmptyContentValidator,
             ObservationShapeValidator,
         )
@@ -2497,6 +2498,19 @@ class LocalCodingAgent:
             if self.runtime_config.stream_model_responses
             else RealLLMOperator(self.client)
         )
+        # Anchor-violation validator (summary→active-constraint).
+        # Reads live anchored messages from the session each turn so
+        # mid-session NEVER: constraints are picked up without rebuild.
+        def _live_anchors() -> list[str]:
+            sess = self.last_session
+            if sess is None:
+                return []
+            return [
+                m.content for m in sess.messages
+                if isinstance(m.metadata, dict)
+                and m.metadata.get('anchor') is True
+                and isinstance(m.content, str)
+            ]
         self._sm_runner = StateMachineRunner(
             operators=[
                 llm_operator,
@@ -2506,6 +2520,7 @@ class LocalCodingAgent:
             validators=[
                 ObservationShapeValidator(),
                 NonEmptyContentValidator(),
+                AnchorViolationValidator(anchors_provider=_live_anchors),
             ],
             # ConsecutiveErrorEvaluator returns 'replan' when last observation
             # is an error; today this only feeds telemetry, but it makes

@@ -9,6 +9,9 @@ the resulting Observations.
 """
 from __future__ import annotations
 
+import re
+from typing import Callable
+
 from src.agent_state_machine import (
     Action,
     Observation,
@@ -116,6 +119,121 @@ class BudgetValidator:
             passed=within,
             checks=(check,),
             severity='block' if not within else 'info',
+        )
+
+
+class AnchorViolationValidator:
+    """Surfaces violations of NEVER: anchored constraints on bash tool calls.
+
+    Anchored messages (mission/correction/never/always prefixes; see
+    src/agent_session.py:_should_auto_anchor) survive compaction and stay
+    visible to the LLM as context. This validator turns one slice of that
+    passive history into ACTIVE governance: when a bash command is
+    dispatched, every NEVER: constraint in the session's anchors is
+    word-set-overlapped against the command. Above-threshold overlap
+    yields severity='warn' with the matched constraint named in the
+    evidence — surfacing the violation to the decision log without
+    blocking the loop.
+
+    Provider injection: an ``anchors_provider`` callable is supplied at
+    construction time (typically a closure over the live session). On
+    every validate() call the provider is invoked fresh, so anchors
+    added mid-session are picked up without re-instantiating the
+    validator. Provider failures are swallowed (validator must never
+    crash the runner).
+
+    Smallest meaningful first cut at the user's framing
+    "summary as active constraint, not passive history." Future
+    expansion: 'block' severity for hard walls (rm -rf /, force-push
+    main); LLM-judge for fuzzy matching beyond word overlap; coverage
+    of MISSION/CORRECTION/IMPORTANT prefixes (today: only NEVER).
+    """
+
+    _NEVER_PREFIX_RE = re.compile(r'(?im)^NEVER:\s*(.+)$')
+    # Tokens shorter than this are dropped (`a`, `an`, `is`, `to`...) —
+    # they create noise in word-overlap matching.
+    _MIN_TOKEN_LEN = 3
+    # Minimum overlap to flag. 2 = require at least 2 substantive
+    # tokens shared between the anchor's NEVER body and the command.
+    _MIN_OVERLAP = 2
+
+    def __init__(self, anchors_provider: Callable[[], list[str]]) -> None:
+        self._anchors_provider = anchors_provider
+
+    @property
+    def name(self) -> str:
+        return 'anchor_violation'
+
+    def applies_to(self, action: Action) -> bool:
+        if action.kind != 'tool_call':
+            return False
+        return action.payload.get('tool_name') == 'bash'
+
+    def validate(self, action: Action, observation: Observation) -> ValidationResult:
+        try:
+            anchors = self._anchors_provider() or []
+        except Exception:
+            # Provider failure must not crash the runner. Degrade to pass.
+            return self._pass(action, 'anchors_provider raised; skipped')
+
+        command = ''
+        args = action.payload.get('arguments')
+        if isinstance(args, dict):
+            cmd = args.get('command')
+            if isinstance(cmd, str):
+                command = cmd
+        if not command:
+            return self._pass(action, 'no command to inspect')
+
+        cmd_tokens = self._tokens(command)
+        violations: list[tuple[str, set[str]]] = []
+        for anchor_text in anchors:
+            if not isinstance(anchor_text, str):
+                continue
+            for match in self._NEVER_PREFIX_RE.finditer(anchor_text):
+                constraint = match.group(1).strip()
+                if not constraint:
+                    continue
+                anchor_tokens = self._tokens(constraint)
+                overlap = anchor_tokens & cmd_tokens
+                if len(overlap) >= self._MIN_OVERLAP:
+                    violations.append((constraint, overlap))
+
+        if not violations:
+            return self._pass(action, 'no anchor violations detected')
+
+        evidence_parts: list[str] = []
+        for constraint, overlap in violations:
+            evidence_parts.append(
+                f'NEVER: {constraint!r} overlap={sorted(overlap)}'
+            )
+        check = ValidationCheck(
+            name='anchor_violation',
+            passed=False,
+            evidence=' | '.join(evidence_parts),
+        )
+        return ValidationResult(
+            action_id=action.id,
+            passed=False,
+            checks=(check,),
+            severity='warn',
+        )
+
+    @classmethod
+    def _tokens(cls, text: str) -> set[str]:
+        # Lowercase word tokenization, drop short tokens, drop common
+        # filler words. Non-empty intersection is the warning surface.
+        words = re.findall(r"[A-Za-z]+", text.lower())
+        return {w for w in words if len(w) >= cls._MIN_TOKEN_LEN}
+
+    @staticmethod
+    def _pass(action: Action, evidence: str) -> ValidationResult:
+        return ValidationResult(
+            action_id=action.id, passed=True,
+            checks=(ValidationCheck(
+                name='anchor_violation', passed=True, evidence=evidence,
+            ),),
+            severity='info',
         )
 
 
