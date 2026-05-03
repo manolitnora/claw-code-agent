@@ -353,6 +353,28 @@ def compact_conversation(
     while compact_end < total and _msg_is_tool_result(session.messages[compact_end]):
         compact_end += 1
 
+    # Symmetric pair integrity (atomic tool-pair compaction).
+    # The walk above only handles tool_result AT the boundary cut. When
+    # a non-tool-result message intervenes — e.g. assistant_tool_use →
+    # user (interjection) → tool_result — the walk misses it, the
+    # assistant_tool_use folds into the summary, and the tool_result
+    # becomes an orphan in the preserved tail (later 400'd by Anthropic).
+    # Track open tool_use IDs in candidates and extend compact_end forward
+    # by ID match, absorbing intervening messages, until every tool_use
+    # in candidates has its tool_result alongside it.
+    open_ids = _collect_open_tool_use_ids(session.messages[prefix_count:compact_end])
+    while open_ids and compact_end < total:
+        m = session.messages[compact_end]
+        compact_end += 1
+        if m.role == 'assistant' and m.tool_calls:
+            for tc in m.tool_calls:
+                if isinstance(tc, dict) and isinstance(tc.get('id'), str):
+                    open_ids.add(tc['id'])
+        elif _msg_is_tool_result(m):
+            cid = _tool_call_id_of(m)
+            if cid is not None:
+                open_ids.discard(cid)
+
     if compact_end <= prefix_count:
         return CompactionResult(
             boundary_message=_build_boundary('Not enough messages after prefix.'),
@@ -460,6 +482,43 @@ def compact_conversation(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _tool_call_id_of(msg: AgentMessage) -> str | None:
+    """Best-effort extraction of the tool_call_id from a tool-result message.
+
+    Handles the three persisted shapes:
+      - role='tool' with tool_call_id field
+      - role='user' with tool_call_id field
+      - role='user' with blocks=[{'type':'tool_result','tool_call_id':...}]
+    """
+    if msg.tool_call_id is not None:
+        return msg.tool_call_id
+    if msg.role == 'user' and msg.blocks:
+        for block in msg.blocks:
+            if isinstance(block, dict) and block.get('type') == 'tool_result':
+                cid = block.get('tool_call_id') or block.get('tool_use_id')
+                if isinstance(cid, str):
+                    return cid
+    return None
+
+
+def _collect_open_tool_use_ids(msgs: list[AgentMessage]) -> set[str]:
+    """Tool_use ids announced by assistants in `msgs` whose matching
+    tool_result is NOT also in `msgs` — i.e. unsatisfied pairs that would
+    leave an orphan if the tail were cut here.
+    """
+    open_ids: set[str] = set()
+    for m in msgs:
+        if m.role == 'assistant' and m.tool_calls:
+            for tc in m.tool_calls:
+                if isinstance(tc, dict) and isinstance(tc.get('id'), str):
+                    open_ids.add(tc['id'])
+        else:
+            cid = _tool_call_id_of(m)
+            if cid is not None:
+                open_ids.discard(cid)
+    return open_ids
+
 
 def _is_anchor(msg: AgentMessage) -> bool:
     """True if a message is marked as an anchor sink (never compacted)."""
