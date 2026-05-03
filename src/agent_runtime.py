@@ -5752,8 +5752,8 @@ class LocalCodingAgent:
             # ENFORCE CITATIONS: rewrite uncited claims before registering
             # This is the independent axis work that breaks orbit
             try:
-                sys.path.insert(0, str(latti_home / 'lib'))
-                from citation_enforcer import enforce_citations
+                sys.path.insert(0, str(Path(__file__).parent))
+                from citation_enforcer_v2 import enforce_citations
                 final_output, is_clean = enforce_citations(final_output, strict=False)
                 # Update result with rewritten output
                 if hasattr(result, 'final_output'):
