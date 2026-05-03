@@ -429,6 +429,11 @@ class LocalCodingAgent:
         except Exception:
             pass
         scratchpad_directory = self._ensure_scratchpad_directory(session_id)
+        
+        # ROTATION ACTIVATION: Check if rotation signal exists and activate if needed
+        # This switches the agent to self-axis mode if the rotation gate fired
+        prompt = self._check_rotation_activation(prompt)
+        
         # Pre-response: inject any claim-matches into system prompt so echoes
         # of prior claims are recognized structurally, not re-reasoned.
         self._inject_claim_matches(prompt)
@@ -5547,6 +5552,51 @@ class LocalCodingAgent:
         )
         self.resume_source_session_id = None
 
+    def _check_rotation_activation(self, prompt: str) -> str:
+        """Check if rotation signal exists and activate if needed.
+        
+        If the rotation gate fired in a prior turn, a signal file will exist.
+        This method detects it, activates self-axis mode, and returns a modified
+        prompt that includes the self-directed task.
+        
+        Returns the original prompt if no rotation signal, or a self-axis prompt
+        if rotation is activated.
+        """
+        import sys
+        from pathlib import Path
+        try:
+            latti_home = Path.home() / '.latti'
+            if not (latti_home / 'last_session').is_file():
+                return prompt
+            
+            sys.path.insert(0, str(latti_home / 'lib'))
+            from rotation_activator import activate_rotation  # type: ignore[import-not-found]
+            
+            activation = activate_rotation()
+            if activation.activated and activation.prompt:
+                # Log activation
+                import json
+                import time
+                journal_path = latti_home / 'memory' / 'rotation_journal.jsonl'
+                journal_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                entry = {
+                    'timestamp': time.time(),
+                    'event': 'rotation_activated',
+                    'task_id': activation.task_id,
+                    'task_title': activation.task_title,
+                }
+                with open(journal_path, 'a') as f:
+                    f.write(json.dumps(entry) + '\n')
+                
+                # Return the self-axis prompt
+                return activation.prompt
+        except Exception:
+            # Fail silent — must never break the model loop
+            pass
+        
+        return prompt
+    
     def _check_rotation_gate(self, result: AgentRunResult) -> None:
         """Check if we should rotate to self-directed work.
         
