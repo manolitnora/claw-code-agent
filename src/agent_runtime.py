@@ -479,6 +479,25 @@ class LocalCodingAgent:
         _maybe_spawn_identity_compiler()
         return result
 
+    def _inject_next_priority(self) -> None:
+        """Pre-response hook: inject "next action" priority context.
+
+        Originally introduced by commit 84bc6a7 with a call site but no
+        body — agent.run() raised AttributeError on every invocation,
+        which surfaced live as "Worker exited before returning a result"
+        on every chat turn (worker subprocess crashed on the missing
+        method before producing a result file).
+
+        Currently a no-op: callable, returns None, no side effects.
+        The originally intended behavior (read priorities from somewhere
+        and append to system prompt) is not specified in the commit
+        that introduced the call site; the load-bearing fix is
+        unbreaking the chat loop, not inventing semantics.
+
+        Tested by tests/test_inject_next_priority_unbreak.py.
+        """
+        return None
+
     def _inject_claim_matches(self, prompt: str) -> None:
         """Pre-response hook: if the incoming prompt echoes prior claims,
         append the matches to append_system_prompt so the LLM sees the echo
