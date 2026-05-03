@@ -319,6 +319,19 @@ def _run_background_worker(args: argparse.Namespace) -> int:
             args.prompt,
             active_session_id=getattr(args, 'resume_session_id', None),
         )
+        # Smoke-only hook: simulate a worker that completed the LLM turn
+        # (so the session checkpoint at SESSION_DIR/<id>.json is on disk)
+        # but exited before writing its result file. The parent's
+        # run_background_turn → synthesize_worker_failure_result path then
+        # produces the "Worker exited before returning a result" message
+        # the supervisor smoke harness asserts on.
+        # Tested by scripts/smoke_latti_supervisor.py.
+        if os.environ.get('LATTI_SUPERVISOR_SMOKE_FAIL_AFTER_SESSION') == '1':
+            session_id = result.session_id
+            session_path = result.session_path
+            stop_reason = 'smoke_forced_worker_failure'
+            exit_code = 1
+            return 1
         save_worker_result(background_runtime.root, args.background_id, result)
         _print_agent_result(result, show_transcript=args.show_transcript)
         exit_code = 0
@@ -897,27 +910,29 @@ def _run_agent_chat_loop(
                 cost_usd=result.total_cost_usd,
             )
             tui.status_footer()  # redraw sticky footer with new data
-        # After rendering + persisting the turn, check memory again BEFORE
+        # After rendering + persisting the turn, decide whether to run the
         # optional post-turn hooks (auto-speak, self-sculpt). On macOS under
         # compressor/wired pressure those hooks can push Python over jetsam;
-        # the user then sees a good response followed by SIGKILL. Bail cleanly
-        # now instead — the session is already saved and resume can continue.
-        if use_tui and _macos_safe_memory_mb() < int(os.environ.get('LATTI_MIN_SAFE_MB', '1000')):
-            tui.info(
-                f'low memory after turn — session saved ({active_session_id[:12]}), '
-                'skipping voice/self-sculpt and exiting cleanly'
-            )
-            tui.done_marker()
-            try:
-                tui_heal.uninstall()
-                tui.cleanup()
-            except Exception:
-                pass
-            return 75
-        if os.environ.get('LATTI_LOW_MEM') == '1':
-            # Lightweight mode: keep the interactive loop alive, but skip
-            # optional post-turn hooks that spawn subprocesses/import extra
-            # modules and have repeatedly triggered macOS jetsam under low RAM.
+        # earlier this branch returned 75 (session-end) but that meant a
+        # memory-pressured machine could only ever run one query before
+        # latti exited. The session is already saved — we just skip the
+        # optional hooks and keep the chat loop running.
+        _safe_mb = _macos_safe_memory_mb() if use_tui else 999_999
+        _post_turn_threshold = int(os.environ.get('LATTI_POST_TURN_MIN_MB', '200'))
+        _already_low_mem = os.environ.get('LATTI_LOW_MEM') == '1'
+        _post_turn_action = _post_turn_memory_action(
+            safe_mb=_safe_mb,
+            threshold_mb=_post_turn_threshold,
+            already_low_mem=_already_low_mem,
+        )
+        if _post_turn_action == 'skip_hooks':
+            if not _already_low_mem and use_tui:
+                tui.info(
+                    f'low memory after turn — disabling voice/self-sculpt for '
+                    f'the rest of this session (session: {active_session_id[:12]})'
+                )
+                # Persist for subsequent turns AND any subprocesses we spawn.
+                os.environ['LATTI_LOW_MEM'] = '1'
             _fired = []
         else:
             # Detect if the LLM called speak.sh this turn (via bash tool)
@@ -993,6 +1008,32 @@ def _detect_llm_spoke(result) -> None:
         if isinstance(content, str) and 'speak.sh' in content:
             _llm_spoke_this_turn = True
             return
+
+
+def _post_turn_memory_action(
+    *,
+    safe_mb: int,
+    threshold_mb: int,
+    already_low_mem: bool,
+) -> str:
+    """Decide what to do after a turn given current memory pressure.
+
+    Returns:
+      'continue'   — run optional post-turn hooks (voice TTS, self-sculpt)
+      'skip_hooks' — skip them; chat loop continues either way
+
+    Policy:
+      - If the wrapper already promoted us to low-mem mode → always skip.
+      - If safe RAM dropped strictly below threshold this turn → skip.
+      - Otherwise → continue normally.
+
+    Pure function. No side effects. Tested by tests/test_post_turn_memory.py.
+    """
+    if already_low_mem:
+        return 'skip_hooks'
+    if safe_mb < threshold_mb:
+        return 'skip_hooks'
+    return 'continue'
 
 
 def _macos_safe_memory_mb() -> int:
