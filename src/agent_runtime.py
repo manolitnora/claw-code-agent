@@ -2526,11 +2526,16 @@ class LocalCodingAgent:
 
         State is frozen so this constructs a new state via dataclasses.replace.
         Controllers that don't read 'last_verdict' continue to work unchanged.
+
+        Always writes — including 'continue' — so verdict-driven controller
+        behavior is one-shot. If a 'replan' fires, drives a reminder
+        injection, and the next step succeeds, this overwrites with
+        'continue' and the turn after that does NOT re-inject the
+        reminder. (Pre-fix: 'continue' was filtered, so a single 'replan'
+        verdict would persist and re-inject every subsequent turn.)
         """
         if self._sm_state is None:
             return
-        if verdict == 'continue':
-            return  # the no-op verdict is noise; only thread non-default ones
         from dataclasses import replace as _dc_replace
         current_runtime = (
             dict(self._sm_state.runtime) if isinstance(self._sm_state.runtime, dict) else {}
@@ -2562,9 +2567,11 @@ class LocalCodingAgent:
             except Exception:
                 evaluator_names.append(type(ev).__name__)
         events: list[dict] = []
-        # Precedence for threading: 'escalate' > 'timeout' > 'done' > 'replan'.
+        # Precedence for threading: 'escalate' > 'timeout' > 'done' > 'replan' > 'continue'.
         # If multiple evaluators fire, the most-terminal verdict wins on the
-        # state.runtime channel. 'continue' is filtered (no-op).
+        # state.runtime channel. 'continue' is now also threaded so verdict-
+        # driven controller behavior (e.g. replan-injects-reminder) becomes
+        # one-shot — see _thread_eval_verdict_to_state docstring.
         _PRECEDENCE = {'escalate': 4, 'timeout': 3, 'done': 2, 'replan': 1, 'continue': 0}
         winning_verdict: str | None = None
         winning_rank = -1
@@ -2582,7 +2589,10 @@ class LocalCodingAgent:
             if rank > winning_rank:
                 winning_rank = rank
                 winning_verdict = r.verdict
-        if winning_verdict and winning_verdict != 'continue':
+        if winning_verdict:
+            # Always thread the winning verdict — including 'continue' —
+            # so verdict-driven controller behavior is one-shot rather
+            # than persistent across turns.
             self._thread_eval_verdict_to_state(winning_verdict)
         return events
 

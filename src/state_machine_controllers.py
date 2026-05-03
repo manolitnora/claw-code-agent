@@ -30,6 +30,31 @@ ActionFactory = Callable[[State, 'Goal | None'], 'Action | None']
 Rule = tuple[Predicate, ActionFactory, str]  # last element is the rule's name
 
 
+_REPLAN_REMINDER_TEXT = (
+    '<system-reminder>\n'
+    'STATE-LAYER NOTICE: The state-machine evaluator flagged the previous '
+    'step with verdict=replan. The last action produced an error '
+    'observation. Reconsider your approach before retrying — diagnose the '
+    'failure, then choose a different tool or argument shape.\n'
+    '</system-reminder>'
+)
+
+
+def _inject_replan_reminder(payload: dict) -> dict:
+    """Return a copy of `payload` with a State-layer replan reminder
+    appended to the messages list.
+
+    The reminder is a user-role system-reminder block, idempotent in
+    shape — appending it twice would just produce duplicate reminders,
+    not change semantics. The agent_runtime is responsible for clearing
+    runtime['last_verdict'] after the LLM call so the next turn doesn't
+    re-inject (one-shot consumption).
+    """
+    messages = list(payload.get('messages') or [])
+    messages.append({'role': 'user', 'content': _REPLAN_REMINDER_TEXT})
+    return {**payload, 'messages': messages}
+
+
 class RuleBasedController:
     """Picks the first rule whose predicate fires.
 
@@ -190,10 +215,30 @@ class RuntimeLoopController:
             payload = runtime.get('next_llm_action')
             if not isinstance(payload, dict):
                 return None
+
+            # Verdict→action wiring (v2 close).
+            # The State layer's last evaluation is in runtime['last_verdict'].
+            # This is where evaluator verdicts go from passive telemetry to
+            # active control:
+            #   'escalate' → halt the loop (return None)
+            #   'replan'   → inject a State-layer reminder into the next LLM
+            #                payload so the model sees explicit governance
+            #                feedback, not just the raw error in context
+            #   anything else → normal pass-through
+            # See state_machine_evaluators.py for what produces each verdict.
+            verdict = runtime.get('last_verdict')
+            if verdict == 'escalate':
+                return None  # halt — outer loop produces controller_halt result
+
+            rationale = 'rule_fired: runtime_query_model'
+            if verdict == 'replan':
+                payload = _inject_replan_reminder(payload)
+                rationale = 'rule_fired: runtime_query_model_with_replan_reminder'
+
             return PolicyDecision(
                 at_state_turn_id=state.turn_id,
                 chose=Action(kind='llm_call', payload=payload),
-                rationale='rule_fired: runtime_query_model',
+                rationale=rationale,
                 decided_by='rule',
                 confidence=1.0,
             )

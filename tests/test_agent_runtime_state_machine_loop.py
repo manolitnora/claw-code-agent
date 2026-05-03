@@ -467,10 +467,16 @@ def test_evaluate_threads_replan_into_state_runtime(tmp_path):
         agent._sm_state.runtime
 
 
-def test_evaluate_does_not_thread_continue(tmp_path):
-    """The default 'continue' verdict is noise and must NOT be threaded —
-    otherwise every successful step would write 'continue' to runtime,
-    masking any prior non-default verdict."""
+def test_evaluate_threads_continue_for_one_shot_consumption(tmp_path):
+    """Verdicts are one-shot. After a 'replan' has driven a State-layer
+    response (e.g. injected reminder via RuntimeLoopController), the next
+    successful step must OVERWRITE last_verdict with 'continue' so the
+    turn after that does not re-inject. Pre-fix: 'continue' was filtered
+    and a single 'replan' would persist forever, re-injecting every
+    subsequent turn. New contract: every winning_verdict is threaded —
+    including 'continue' — so verdict-driven controller behavior is
+    one-shot.
+    """
     from src.agent_state_machine import State, Observation
 
     agent = _make_agent(tmp_path)
@@ -480,15 +486,14 @@ def test_evaluate_does_not_thread_continue(tmp_path):
         action_id='action-x', kind='success',
         payload={'tool_name': 'read_file', 'ok': True, 'content': 'x'},
     )
-    # Pre-populate runtime with a prior 'replan' verdict.
     agent._sm_state = State(
         turn_id='t1', session_id='sm-thread', last_observation=ok_obs, budget_remaining_usd=10.0,
         runtime={'last_verdict': 'replan'},
     )
 
     agent._evaluate_state_after_step()
-    # 'continue' should NOT clobber the prior 'replan'.
-    assert agent._sm_state.runtime.get('last_verdict') == 'replan', \
+    # 'continue' overwrites the prior 'replan' — one-shot consumption.
+    assert agent._sm_state.runtime.get('last_verdict') == 'continue', \
         agent._sm_state.runtime
 
 
