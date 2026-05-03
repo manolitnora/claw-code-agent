@@ -476,7 +476,8 @@ class AgentSessionState:
         )
 
     def to_openai_messages(self) -> list[JSONDict]:
-        return [message.to_openai_message() for message in self.messages]
+        raw = [message.to_openai_message() for message in self.messages]
+        return _strip_orphan_tool_results(raw)
 
     def transcript(self) -> tuple[JSONDict, ...]:
         return tuple(message.to_transcript_entry() for message in self.messages)
@@ -511,6 +512,48 @@ class AgentSessionState:
                 default=0,
             ),
         )
+
+
+def _strip_orphan_tool_results(messages: list[JSONDict]) -> list[JSONDict]:
+    """Drop role=tool messages whose tool_call_id was never announced.
+
+    Auto-compaction can drop the assistant message that issued a tool_use
+    while keeping the corresponding tool_result. Sending that to Anthropic
+    returns:
+        messages.0.content.0: unexpected `tool_use_id` found in
+        `tool_result` blocks: <id>. Each `tool_result` block must have a
+        corresponding `tool_use` block in the previous message.
+
+    This filter walks messages in order, tracks the set of tool_call ids
+    announced by prior assistant messages, and drops any role=tool whose
+    id is not in that set. Idempotent. No effect on sessions without
+    tool calls.
+
+    Tested by tests/test_orphan_tool_result_strip.py.
+    """
+    announced: set[str] = set()
+    out: list[JSONDict] = []
+    for msg in messages:
+        role = msg.get('role')
+        if role == 'assistant':
+            tool_calls = msg.get('tool_calls')
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        tc_id = tc.get('id')
+                        if isinstance(tc_id, str):
+                            announced.add(tc_id)
+            out.append(msg)
+            continue
+        if role == 'tool':
+            call_id = msg.get('tool_call_id')
+            if isinstance(call_id, str) and call_id in announced:
+                out.append(msg)
+            # else: orphan — drop silently. Logging here would noise the TUI;
+            # callers can detect by length-mismatch if they care.
+            continue
+        out.append(msg)
+    return out
 
 
 def _usage_from_payload(payload: Any) -> UsageStats:
