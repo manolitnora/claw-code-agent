@@ -161,6 +161,11 @@ class ResponseGate:
             r"do\s+you\s+want\s+me\s+to",
             r"shall\s+I",
             r"should\s+I\s+(?:also|still|now|continue|proceed|stop|wait)",
+            # Enhanced patterns for "what next" style routing (2026-05-03)
+            r"what\s+(?:next|should\s+(?:I|we))",
+            r"(?:want\s+me\s+to|like\s+me\s+to)\s+(?:continue|proceed|start|begin)",
+            r"(?:ready\s+(?:for|to)|waiting\s+(?:for|on))",
+            r"(?:let\s+me\s+know|tell\s+me)\s+(?:if|when|what)",
         ]
 
         for pattern in routing_patterns:
@@ -428,7 +433,11 @@ _ROUTING_PHRASES = re.compile(
     r"\b(?:your\s+call|standing\s+by|what\s+would\s+you\s+like|"
     r"what\s+do\s+you\s+think|your\s+choice|let\s+me\s+know\s+what|"
     r"which\s+would\s+you\s+prefer|would\s+you\s+like\s+me\s+to|"
-    r"do\s+you\s+want\s+me\s+to|shall\s+I|should\s+I)\b",
+    r"do\s+you\s+want\s+me\s+to|shall\s+I|should\s+I|"
+    r"what\s+next|what\s+should|want\s+me\s+to\s+(?:continue|proceed|start|begin)|"
+    r"like\s+me\s+to\s+(?:continue|proceed|start|begin)|"
+    r"ready\s+(?:for|to)|waiting\s+(?:for|on)|"
+    r"let\s+me\s+know\s+(?:if|when|what)|tell\s+me\s+(?:if|when|what))\b",
     re.IGNORECASE,
 )
 
