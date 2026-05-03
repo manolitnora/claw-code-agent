@@ -23,6 +23,7 @@ from .hook_policy import HookPolicyRuntime
 from .lsp_runtime import LSPRuntime
 from .mcp_runtime import MCPRuntime
 from .scar_router import ScarRouter
+from .priority_router import PriorityRouter
 from .agent_prompting import (
     build_prompt_context,
     build_system_prompt_parts,
@@ -437,6 +438,15 @@ class LocalCodingAgent:
         # Pre-response: inject any claim-matches into system prompt so echoes
         # of prior claims are recognized structurally, not re-reasoned.
         self._inject_claim_matches(prompt)
+        
+        # Pre-response: inject finalization context if the prompt contains
+        # finalization keywords to guide response format and structure.
+        self._inject_response_finalization_context(prompt)
+        
+        # Layer 4: Inject next priority before response generation
+        # This prevents "what next?" routing by making the next action explicit
+        self._inject_next_priority()
+        
         self._bind_state_machine_session(session_id)
         registered_goal = self._register_goal_from_prompt(prompt, session_id)
         result = self._run_prompt(
@@ -487,6 +497,35 @@ class LocalCodingAgent:
             # Append to the system prompt for this turn
             existing = self.append_system_prompt or ''
             self.append_system_prompt = existing + injection
+        except Exception:
+            pass
+
+    def _inject_response_finalization_context(self, prompt: str) -> None:
+        """Pre-response hook: inject response finalization context if the prompt
+        contains finalization keywords. This helps the LLM understand the expected
+        response format and constraints."""
+        try:
+            # Check if prompt contains finalization-related keywords
+            finalization_keywords = [
+                'finalize', 'finalization', 'final response', 'wrap up',
+                'conclude', 'summary', 'complete', 'done', 'finish'
+            ]
+            prompt_lower = prompt.lower()
+            if not any(keyword in prompt_lower for keyword in finalization_keywords):
+                return
+            
+            # Inject finalization context
+            finalization_context = (
+                "\n\n[RESPONSE FINALIZATION CONTEXT]\n"
+                "When finalizing your response:\n"
+                "1. Summarize key findings or decisions\n"
+                "2. Highlight any blockers or dependencies\n"
+                "3. Provide clear next steps if applicable\n"
+                "4. Use structured format (bullets, sections) for clarity\n"
+                "5. Avoid trailing questions unless explicitly requested\n"
+            )
+            existing = self.append_system_prompt or ''
+            self.append_system_prompt = existing + finalization_context
         except Exception:
             pass
 
