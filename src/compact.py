@@ -322,11 +322,21 @@ def compact_conversation(
         getattr(agent.runtime_config, 'compact_preserve_messages', 4), 1
     )
 
-    # Identify the prefix count (system-injected messages that precede the
-    # real conversation, e.g. a compaction-replay boundary).
+    # Identify the prefix count: previous compaction artifacts at the
+    # head of the session that must NOT be re-summarized. We protect
+    # both 'compact_boundary' and 'compact_summary' messages — without
+    # this, every additional compaction would re-summarize the previous
+    # summaries into a single increasingly-blurry one (compound blur,
+    # exponential information loss). With this, successive compactions
+    # produce a chronological stack of summaries: oldest first, newest
+    # last, then anchored mission/correction messages, then verbatim
+    # tail. This is the message-layer analog of DeepSeek's HCA layers
+    # — heavily compressed history preserved (not re-compressed) when
+    # the model revisits.
+    _PROTECTED_PREFIX_KINDS = {'compact_boundary', 'compact_summary'}
     prefix_count = 0
     for msg in session.messages:
-        if msg.metadata.get('kind') == 'compact_boundary':
+        if msg.metadata.get('kind') in _PROTECTED_PREFIX_KINDS:
             prefix_count += 1
         else:
             break
