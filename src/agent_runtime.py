@@ -472,6 +472,10 @@ class LocalCodingAgent:
         # This is the decision point that prevents orbit
         self._check_rotation_gate(result)
 
+        # OUTCOME RECORDING: Record self-axis task outcomes for feedback loop
+        # This enables pattern learning and harness refinement
+        self._record_self_axis_outcome(result)
+
         _maybe_spawn_identity_compiler()
         return result
 
@@ -5679,6 +5683,41 @@ class LocalCodingAgent:
                         pass
                 except Exception:
                     pass  # Rotation trigger is best-effort
+        except Exception:
+            # Fail silent — must never break the model loop
+            pass
+
+    def _record_self_axis_outcome(self, result: AgentRunResult) -> None:
+        """Record outcome of a self-axis task for feedback loop analysis.
+        
+        This captures metrics before/after a self-directed work session so the
+        pattern learner can identify which task types lead to system improvements.
+        Best-effort; failures are swallowed.
+        """
+        import sys
+        from pathlib import Path
+        try:
+            latti_home = Path.home() / '.latti'
+            if not (latti_home / 'last_session').is_file():
+                return
+            
+            sys.path.insert(0, str(latti_home / 'lib'))
+            from outcome_recorder import record_outcome  # type: ignore[import-not-found]
+            
+            # Check if this was a self-axis task (indicated by rotation activation)
+            # We detect this by checking if the prompt contained self-axis markers
+            # For now, we record all outcomes and let the recorder filter
+            record_outcome(
+                task_id=os.environ.get('LATTI_TASK_ID', 'unknown'),
+                title=os.environ.get('LATTI_TASK_TITLE', 'self-axis-work'),
+                success=result.stop_reason == 'end_turn',
+                changes_made=len(result.tool_calls) > 0,
+                metrics={
+                    'turns': result.turns,
+                    'tool_calls': len(result.tool_calls),
+                    'stop_reason': result.stop_reason,
+                }
+            )
         except Exception:
             # Fail silent — must never break the model loop
             pass
