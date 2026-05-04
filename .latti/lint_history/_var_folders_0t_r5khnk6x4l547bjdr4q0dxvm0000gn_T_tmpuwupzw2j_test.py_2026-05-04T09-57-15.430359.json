@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-05-04T09:57:15.430359",
+  "filepath": "/var/folders/0t/r5khnk6x4l547bjdr4q0dxvm0000gn/T/tmpuwupzw2j/test.py",
+  "file_hash": "fbd4cca624cd582a7723aee4b163ffabe479a88158f5765f1770a37cc017cd86",
+  "total_issues": 0,
+  "errors": 0,
+  "warnings": 0,
+  "infos": 0,
+  "suggestions": 0,
+  "issues": [],
+  "auto_fixes_applied": 0
+}
