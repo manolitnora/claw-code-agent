@@ -431,6 +431,37 @@ def default_tool_registry() -> dict[str, AgentTool]:
             handler=_tool_search,
         ),
         AgentTool(
+            name='recall_memory',
+            description=(
+                'Search Latti\'s persistent memory (scars, SOPs, lessons, decisions, '
+                'references at ~/.latti/memory/) by keyword. Use this BEFORE making a '
+                'decision that might match a prior correction or SOP — anchored '
+                'history is in your context window, but the typed memory store is not.'
+            ),
+            parameters={
+                'type': 'object',
+                'properties': {
+                    'query': {
+                        'type': 'string',
+                        'description': 'Keywords to match against memory body text. Tokens shorter than 3 chars are dropped.',
+                    },
+                    'kind': {
+                        'type': 'string',
+                        'enum': ['scar', 'sop', 'lesson', 'decision', 'reference'],
+                        'description': 'Filter to a specific memory kind. Omit for all kinds.',
+                    },
+                    'limit': {
+                        'type': 'integer',
+                        'minimum': 1,
+                        'maximum': 20,
+                        'description': 'Max results (default 5).',
+                    },
+                },
+                'required': ['query'],
+            },
+            handler=_recall_memory,
+        ),
+        AgentTool(
             name='sleep',
             description='Pause execution briefly for bounded local wait flows.',
             parameters={
