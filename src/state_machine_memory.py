@@ -145,6 +145,45 @@ class LattiMemoryStore:
             source_turn_id=fm.get('sourceTurnId'),
         )
 
+    def recall(
+        self,
+        query: str,
+        *,
+        kind: MemoryKind | None = None,
+        limit: int = 5,
+    ) -> list[MemoryRecord]:
+        """Keyword-overlap search over stored MemoryRecords.
+
+        Tokenizes ``query`` (lowercase, drop tokens shorter than 3 chars),
+        scores each record by the count of distinct query tokens that
+        appear in its body, and returns the top ``limit`` records sorted
+        by score descending. Ties broken by recency (more recent
+        ``last_used`` wins).
+
+        Records with zero token overlap are dropped — the LLM should
+        receive an empty list, not noise, when nothing matches.
+
+        Tested by tests/test_memory_recall.py.
+        """
+        if not query or not query.strip():
+            return []
+        query_tokens = {
+            tok for tok in re.findall(r'[a-z0-9]+', query.lower())
+            if len(tok) >= 3
+        }
+        if not query_tokens:
+            return []
+        scored: list[tuple[int, float, MemoryRecord]] = []
+        for rec in self.list_records(kind=kind):
+            body_tokens = set(re.findall(r'[a-z0-9]+', rec.body.lower()))
+            overlap = len(query_tokens & body_tokens)
+            if overlap == 0:
+                continue
+            scored.append((overlap, rec.last_used, rec))
+        # Sort by score desc, then recency desc.
+        scored.sort(key=lambda t: (-t[0], -t[1]))
+        return [rec for _score, _ts, rec in scored[:limit]]
+
     def list_records(self, kind: MemoryKind | None = None) -> list[MemoryRecord]:
         """Return all records on disk, optionally filtered by kind."""
         out: list[MemoryRecord] = []

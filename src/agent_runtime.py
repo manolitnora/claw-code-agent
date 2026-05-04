@@ -5792,12 +5792,12 @@ class LocalCodingAgent:
                 return
             
             sys.path.insert(0, str(latti_home / 'lib'))
-            from outcome_recorder import record_outcome  # type: ignore[import-not-found]
+            from outcome_recorder import record_task_outcome  # type: ignore[import-not-found]
             
             # Check if this was a self-axis task (indicated by rotation activation)
             # We detect this by checking if the prompt contained self-axis markers
             # For now, we record all outcomes and let the recorder filter
-            record_outcome(
+            record_task_outcome(
                 task_id=os.environ.get('LATTI_TASK_ID', 'unknown'),
                 title=os.environ.get('LATTI_TASK_TITLE', 'self-axis-work'),
                 success=result.stop_reason == 'end_turn',
