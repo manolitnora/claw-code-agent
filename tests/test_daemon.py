@@ -95,12 +95,12 @@ def hello():
     def test_daemon_start_stop(self, daemon):
         """Test starting and stopping daemon."""
         daemon.start()
-        assert daemon.is_running
+        assert daemon.running
         
         time.sleep(0.5)
         
         daemon.stop()
-        assert not daemon.is_running
+        assert not daemon.running
     
     def test_daemon_background_monitoring(self, daemon, sample_python_file):
         """Test daemon monitors in background."""
@@ -118,10 +118,10 @@ def hello():
         """Test multiple start/stop cycles."""
         for _ in range(3):
             daemon.start()
-            assert daemon.is_running
+            assert daemon.running
             time.sleep(0.2)
             daemon.stop()
-            assert not daemon.is_running
+            assert not daemon.running
     
     # Context Manager Tests
     
@@ -138,10 +138,10 @@ def hello():
         with EdgeSystemLinterDaemon(watch_dir=str(temp_dir)) as d:
             daemon = d
             daemon.start()
-            assert daemon.is_running
+            assert daemon.running
         
         # Should be stopped after context
-        assert not daemon.is_running
+        assert not daemon.running
     
     # Snapshot Tests
     
@@ -449,7 +449,7 @@ def hello():
             time.sleep(0.5)
             
             # Check it's working
-            assert daemon.is_running
+            assert daemon.running
             assert daemon.total_lints >= 0
         
         finally:
@@ -512,10 +512,20 @@ class TestAutoFixLevel:
         assert hasattr(AutoFixLevel, 'AGGRESSIVE')
     
     def test_auto_fix_level_ordering(self):
-        """Test auto-fix levels have correct ordering."""
-        assert AutoFixLevel.NONE.value < AutoFixLevel.SAFE.value
-        assert AutoFixLevel.SAFE.value < AutoFixLevel.MODERATE.value
-        assert AutoFixLevel.MODERATE.value < AutoFixLevel.AGGRESSIVE.value
+        """Auto-fix levels follow an escalation order (NONE → SAFE →
+        MODERATE → AGGRESSIVE). The `.value` strings serialize to JSON
+        (edge_system_linter_daemon.py:471), so they cannot be re-typed to
+        ints without breaking external consumers. Pin the intended order
+        via the enum's iteration order, which Python guarantees follows
+        definition order for `Enum` classes.
+        """
+        ordered = [
+            AutoFixLevel.NONE,
+            AutoFixLevel.SAFE,
+            AutoFixLevel.MODERATE,
+            AutoFixLevel.AGGRESSIVE,
+        ]
+        assert list(AutoFixLevel) == ordered
 
 
 class TestLintSnapshot:
