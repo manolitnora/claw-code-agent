@@ -62,6 +62,11 @@ class ToolExecutionContext:
     team_runtime: 'TeamRuntime | None' = None
     workflow_runtime: 'WorkflowRuntime | None' = None
     worktree_runtime: 'WorktreeRuntime | None' = None
+    # Per-session counters and tagging for anti-loop / anti-self-confirm
+    # heuristics. Mutable contents inside the frozen dataclass — fine,
+    # only the field references are frozen, not what they point to.
+    edit_history: dict[str, int] = field(default_factory=dict)
+    self_authored_paths: set[str] = field(default_factory=set)
 
 
 ToolHandler = Callable[
@@ -1637,6 +1642,55 @@ def _refuse_if_secret_bearing(target: Path) -> None:
         )
 
 
+# Edit-loop threshold: after this many writes/edits to the same path within
+# one tool-context lifetime, refuse with a hard error. Caught from the Latti
+# S127 transcript: model edited the same test file ~10 times tweaking
+# thresholds without changing the underlying logic. Five gives room for
+# iterative work; further iteration is a tweak loop.
+_EDIT_LOOP_LIMIT = 5
+
+
+def _track_write_and_check_loop(target: Path, context: ToolExecutionContext) -> None:
+    """Increment edit count for `target` and refuse if loop limit exceeded.
+
+    Refusal is permanent for the rest of this context's lifetime — there
+    is no way for the model to talk past it. The fix for hitting this is
+    to step back and explain what fundamental change is expected, not to
+    retry with a different threshold.
+    """
+    key = str(target.resolve())
+    context.edit_history[key] = context.edit_history.get(key, 0) + 1
+    context.self_authored_paths.add(key)
+    if context.edit_history[key] > _EDIT_LOOP_LIMIT:
+        raise ToolExecutionError(
+            f'edit-loop guard: refused to write/edit {target} a '
+            f'{context.edit_history[key]}-th time in this session '
+            f'(limit {_EDIT_LOOP_LIMIT}). This pattern indicates a '
+            'tweak-and-rerun loop, not progress. Stop and explain to '
+            'the user what fundamental change you expect to be '
+            'different — or what hypothesis you are testing — before '
+            'editing this file again.'
+        )
+
+
+def _self_authored_warning(target: Path, context: ToolExecutionContext) -> str:
+    """If the agent wrote this file earlier in the session, return a
+    warning header to prepend to the read content. Empty string otherwise.
+
+    This counters the self-confirming-test pattern: the agent writes a
+    test file, then reads / executes it, then cites the result as if it
+    were an objective measurement. The header forces the result to be
+    read alongside its provenance.
+    """
+    if str(target.resolve()) in context.self_authored_paths:
+        return (
+            '[self-authored: this file was written or edited by the '
+            'agent earlier in this session. Results from it are not '
+            'independent measurements. Treat with skepticism.]\n'
+        )
+    return ''
+
+
 def _read_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     import base64
     import struct
@@ -1717,10 +1771,11 @@ def _read_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
         )
 
     text = target.read_text(encoding='utf-8', errors='replace')
+    self_warning = _self_authored_warning(target, context)
     start_line = arguments.get('start_line')
     end_line = arguments.get('end_line')
     if start_line is None and end_line is None:
-        return _truncate_output(text, context.max_output_chars)
+        return _truncate_output(self_warning + text, context.max_output_chars)
     if start_line is not None and (isinstance(start_line, bool) or not isinstance(start_line, int) or start_line < 1):
         raise ToolExecutionError('start_line must be an integer >= 1')
     if end_line is not None and (isinstance(end_line, bool) or not isinstance(end_line, int) or end_line < 1):
@@ -1730,7 +1785,7 @@ def _read_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     end_idx = end_line or len(lines)
     selected = lines[start_idx:end_idx]
     rendered = '\n'.join(f'{start_idx + idx + 1}: {line}' for idx, line in enumerate(selected))
-    return _truncate_output(rendered, context.max_output_chars)
+    return _truncate_output(self_warning + rendered, context.max_output_chars)
 
 
 _LATTI_GATE_PATTERNS = [
@@ -1770,6 +1825,7 @@ def _write_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str
     content = arguments.get('content')
     if not isinstance(content, str):
         raise ToolExecutionError('content must be a string')
+    _track_write_and_check_loop(target, context)
     previous_text: str | None = None
     previous_sha256: str | None = None
     if target.exists() and target.is_file():
@@ -1809,6 +1865,7 @@ def _edit_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     _ensure_write_allowed(context)
     target = _resolve_path(_require_string(arguments, 'path'), context, allow_missing=False)
     _refuse_if_secret_bearing(target)
+    _track_write_and_check_loop(target, context)
     if not target.is_file():
         raise ToolExecutionError(f'Path is not a file: {target}')
     old_text = arguments.get('old_text')
