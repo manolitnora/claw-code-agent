@@ -1621,11 +1621,28 @@ def _list_dir(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     return '\n'.join(lines) if lines else '(empty directory)'
 
 
+def _refuse_if_secret_bearing(target: Path) -> None:
+    """Refuse content-returning tool calls on paths that match known
+    secret-bearing conventions. See `state_machine_operators._is_secret_bearing_path`
+    for the pattern set. Bash retains the ability to read these paths with
+    explicit user intent.
+    """
+    from .state_machine_operators import _is_secret_bearing_path
+    if _is_secret_bearing_path(target):
+        raise ToolExecutionError(
+            f'refused to read secret-bearing path: {target}. '
+            'Reading this via the model-driven tool path would poison '
+            'message history. Use bash with explicit intent if this '
+            'content is genuinely needed.'
+        )
+
+
 def _read_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     import base64
     import struct
 
     target = _resolve_path(_require_string(arguments, 'path'), context, allow_missing=False)
+    _refuse_if_secret_bearing(target)
     if not target.is_file():
         raise ToolExecutionError(f'Path is not a file: {target}')
 
@@ -1791,6 +1808,7 @@ def _write_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str
 def _edit_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     _ensure_write_allowed(context)
     target = _resolve_path(_require_string(arguments, 'path'), context, allow_missing=False)
+    _refuse_if_secret_bearing(target)
     if not target.is_file():
         raise ToolExecutionError(f'Path is not a file: {target}')
     old_text = arguments.get('old_text')
@@ -1943,14 +1961,22 @@ def _grep_search(arguments: dict[str, Any], context: ToolExecutionContext) -> st
     root = _resolve_path(raw_path, context)
     if not root.exists():
         raise ToolExecutionError(f'Path not found: {raw_path}')
+    # If the user explicitly grep'd a secret-bearing file, refuse loudly.
+    # When iterating a directory, secret-bearing entries are skipped
+    # silently below — they weren't named, so silent skip is honest.
+    if root.is_file():
+        _refuse_if_secret_bearing(root)
     try:
         regex = re.compile(re.escape(pattern) if literal else pattern)
     except re.error as exc:
         raise ToolExecutionError(f'Invalid regex pattern: {exc}') from exc
     hits: list[str] = []
     file_iter = root.rglob('*') if root.is_dir() else [root]
+    from .state_machine_operators import _is_secret_bearing_path
     for file_path in file_iter:
         if not file_path.is_file():
+            continue
+        if _is_secret_bearing_path(file_path):
             continue
         try:
             text = file_path.read_text(encoding='utf-8', errors='replace')
