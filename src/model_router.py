@@ -231,9 +231,20 @@ class ModelRouter:
 
         # ── Special cases (known contexts) ──
 
-        # Compaction is pure summarization — light model handles it fine
+        # Compaction default: HEAVY. The 9-section structured summary
+        # is consumed by every subsequent turn; quality compounds.
+        # Haiku-class is meaningfully weaker than Sonnet at preserving
+        # specific names, file paths, and decision rationale through
+        # the structured prompt. Override via LATTI_COMPACTION_TIER for
+        # cost-sensitive sessions; invalid values fall back to HEAVY
+        # (the safer choice for downstream context quality).
         if is_compaction:
-            return self._decide(Tier.LIGHT, "compaction/summarization", 0.95)
+            override = os.environ.get('LATTI_COMPACTION_TIER', '').strip().lower()
+            if override == 'light':
+                return self._decide(Tier.LIGHT, "compaction (LATTI_COMPACTION_TIER=light)", 0.95)
+            if override == 'micro':
+                return self._decide(Tier.MICRO, "compaction (LATTI_COMPACTION_TIER=micro)", 0.95)
+            return self._decide(Tier.HEAVY, "compaction/summarization (default heavy for quality)", 0.95)
 
         # Sub-agent routing — classify the sub-agent's prompt
         if is_sub_agent:
