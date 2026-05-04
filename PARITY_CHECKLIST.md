@@ -2,7 +2,7 @@
 
 This document tracks what is already implemented in Python and what is still missing compared with the upstream npm runtime.
 
-This is a functionality-oriented checklist, not a line-by-line source equivalence claim. Large parts of the mirrored Python workspace still act as inventory or scaffolding, while the working Python runtime currently lives mainly in [`src/agent_runtime.py`](src/agent_runtime.py), [`src/query_engine.py`](src/query_engine.py), [`src/agent_tools.py`](src/agent_tools.py), [`src/agent_prompting.py`](src/agent_prompting.py), [`src/agent_context.py`](src/agent_context.py), [`src/agent_manager.py`](src/agent_manager.py), [`src/plugin_runtime.py`](src/plugin_runtime.py), [`src/agent_slash_commands.py`](src/agent_slash_commands.py), and [`src/openai_compat.py`](src/openai_compat.py).
+This is a functionality-oriented checklist, not a line-by-line source equivalence claim. Large parts of the mirrored Python workspace still act as inventory or scaffolding, while the working Python runtime currently lives mainly in [`src/agent_runtime.py`](src/agent_runtime.py), [`src/query_engine.py`](src/query_engine.py), [`src/agent_tools.py`](src/agent_tools.py), [`src/agent_prompting.py`](src/agent_prompting.py), [`src/agent_context.py`](src/agent_context.py), [`src/agent_manager.py`](src/agent_manager.py), [`src/plugin_runtime.py`](src/plugin_runtime.py), [`src/agent_slash_commands.py`](src/agent_slash_commands.py), [`src/openai_compat.py`](src/openai_compat.py), [`src/builtin_agents.py`](src/builtin_agents.py), [`src/microcompact.py`](src/microcompact.py), [`src/compact.py`](src/compact.py), [`src/bundled_skills.py`](src/bundled_skills.py), and [`src/session_memory_compact.py`](src/session_memory_compact.py).
 
 ---
 
@@ -114,6 +114,10 @@ Done:
 - [x] Query-engine runtime context-reduction summaries
 - [x] Query-engine runtime lineage summaries
 - [x] Query-engine runtime resumed-child orchestration summaries
+- [x] Filesystem-backed custom agent discovery from `~/.claude/agents` and `./.claude/agents`
+- [x] Active agent override precedence across built-in, user, and project agent definitions
+- [x] Custom agent resolution in the `Agent` tool with model, tool-filter, and initial-prompt support
+- [x] Local custom-agent file creation, update, and deletion flows for project/user agent definitions
 
 Missing:
 
@@ -141,6 +145,10 @@ Done:
 - [x] `agent-context` command
 - [x] `agent-context-raw` command
 - [x] `token-budget` command
+- [x] `agents` command
+- [x] `agents-create` command
+- [x] `agents-update` command
+- [x] `agents-delete` command
 - [x] Local background session mode
 - [x] Local background session listing (`agent-ps`)
 - [x] Local background session logs (`agent-logs`)
@@ -167,14 +175,14 @@ Missing:
 - [ ] Self-hosted runner mode
 - [ ] tmux fast paths
 - [ ] Worktree fast paths at the CLI entrypoint level
-- [ ] Node.js version check and platform setup from `setup.ts`
+- [x] Python (Node.js equivalent) version check and platform detection from `setup.ts`
 - [ ] Worktree creation/setup from `setup.ts`
 - [ ] Terminal backup/restore from `setup.ts`
-- [ ] Release notes checking from `setup.ts`
+- [x] Release notes checking from `setup.ts` (local CHANGELOG.md, no network/cache layer)
 - [ ] Full `entrypoints/cli.tsx` parity (version flag, feature flags, env setup, dynamic imports)
 - [ ] Full `entrypoints/init.ts` parity (settings validation, OAuth, policy limits, telemetry, cleanup handlers)
-- [ ] SDK entrypoint (`entrypoints/sdk/` — controlTypes, coreTypes, runtimeTypes, settingsTypes, toolTypes)
-- [ ] Sandbox types/network config schema (`entrypoints/sandboxTypes.ts`)
+- [ ] SDK entrypoint (`entrypoints/sdk/` — controlTypes, coreTypes, runtimeTypes, settingsTypes, toolTypes) — partial: HOOK_EVENTS, EXIT_REASONS, ModelUsage, ThinkingConfig, MCP server configs, JsonSchemaOutputFormat ported in `src/sdk_core_types.py`
+- [x] Sandbox types/network config schema (`entrypoints/sandboxTypes.ts`)
 
 ## 3. Prompt Assembly
 
@@ -195,6 +203,7 @@ Done:
 - [x] Local planning guidance section in the Python system prompt
 - [x] Local task guidance section in the Python system prompt
 - [x] Local LSP guidance section in the Python system prompt
+- [x] Local agent-configuration guidance section in the Python system prompt
 
 - [x] Product metadata/branding from `constants/product.ts` — ported to `src/prompt_constants.py`
 - [x] API limits constants from `constants/apiLimits.ts` — ported to `src/prompt_constants.py`
@@ -254,7 +263,7 @@ Missing:
 
 - [ ] Full tokenizer/chat-message framing parity beyond the current model-aware text token counters
 - [ ] Full parity with `utils/queryContext.ts` (context analysis, suggestions, cache shaping)
-- [ ] Rich memory prompt loading (`services/SessionMemory/`)
+- [x] Session memory compact (`services/SessionMemory/` partial) → `src/session_memory_compact.py` — remaining: background LLM extraction, full template handling
 - [ ] Internal permission-aware memory handling
 - [ ] Resume-aware prompt cache shaping used upstream
 - [ ] More exact context cache invalidation rules
@@ -264,12 +273,12 @@ Missing:
 - [ ] Team memory sync (`services/teamMemorySync/`)
 - [ ] Away summary generation (`services/awaySummary.ts`)
 - [ ] Token estimation service (`services/tokenEstimation.ts`)
-- [ ] Paste content storage and reference parsing (`history.ts`)
+- [x] Paste content storage and reference parsing (`history.ts`) → `src/paste_refs.py` (parse/format/expand `[Pasted text #N +M lines]`); GUI composer auto-collapses pastes ≥500 chars and ships them via `pasted_contents` for server-side expansion before `agent.run`
 - [ ] Image paste handling
 
 ## 5. Slash Commands
 
-Done (37 slash command names in 29 specs):
+Done (53 slash command names in 37 specs):
 
 - [x] `/help`, `/commands`
 - [x] `/context`, `/usage`
@@ -311,59 +320,61 @@ Done (37 slash command names in 29 specs):
 
 Missing npm slash commands (from `src/commands/` — 80+ commands total):
 
-- [ ] `/add-dir` — Add a new working directory
-- [ ] `/agents` — Manage agent configurations
+- [x] `/add-dir` — Add a new working directory
+- [x] `/agents` — Inspect, create, update, and delete local agent definitions
 - [x] `/branch` — Create a branch of the current conversation
-- [ ] `/bridge` — Connect for remote-control sessions
-- [ ] `/btw` — Quick side question without interrupting main conversation
-- [ ] `/chrome` — Chrome extension settings
+- [x] `/bridge` — Connect for remote-control sessions (read-only status in this runtime)
+- [x] `/btw` — Quick side question without interrupting main conversation
+- [x] `/chrome` — Chrome extension settings
 - [x] `/color` — Set the prompt bar color for this session
 - [x] `/compact` — Clear history but keep a summary in context
 - [x] `/copy` — Copy Claude's last response to clipboard
 - [x] `/cost` — Show total cost and duration of session
-- [ ] `/desktop` — Continue session in Claude Desktop
+- [x] `/desktop` — Continue session in Claude Desktop
 - [x] `/diff` — View uncommitted changes and per-turn diffs
 - [x] `/doctor` — Diagnose and verify installation and settings
 - [x] `/effort` — Set effort level for model usage
 - [x] `/exit` — Exit the REPL
 - [x] `/export` — Export conversation to file or clipboard
-- [ ] `/extra-usage` — Configure extra usage for rate limits
-- [ ] `/fast` — Toggle fast mode
-- [ ] `/feedback` — Submit feedback
+- [x] `/extra-usage` — Configure extra usage for rate limits
+- [x] `/fast` — Toggle fast mode
+- [x] `/feedback` — Submit feedback (alias `/bug`)
 - [x] `/files` — List all files currently in context
-- [ ] `/ide` — Manage IDE integrations and show status
-- [ ] `/install-github-app` — Set up GitHub Actions
-- [ ] `/install-slack-app` — Install Slack app
-- [ ] `/keybindings` — Open keybindings config file
-- [ ] `/mobile` — QR code for mobile app
-- [ ] `/output-style` — Change output style
-- [ ] `/passes` — Passes management
-- [ ] `/plugin` — Plugin management
-- [ ] `/pr_comments` — Get comments from a GitHub PR
-- [ ] `/privacy-settings` — View/update privacy settings
-- [ ] `/rate-limit-options` — Show options when rate limited
-- [ ] `/release-notes` — View release notes
-- [ ] `/reload-plugins` — Activate pending plugin changes
-- [ ] `/remote-env` — Configure default remote environment
-- [ ] `/remote-setup` — Remote setup configuration
+- [x] `/ide` — Manage IDE integrations and show status
+- [x] `/install-github-app` — Set up GitHub Actions
+- [x] `/install-slack-app` — Install Slack app
+- [x] `/keybindings` — Open keybindings config file
+- [x] `/mobile` — Mobile app store links (aliases `/ios`, `/android`)
+- [x] `/output-style` — Deprecation pointer to `/config`
+- [x] `/passes` — Passes management
+- [x] `/plugin` — Plugin management (read-only listing)
+- [x] `/pr-comments`, `/pr_comments` — Get comments from a GitHub PR (prompt-type)
+- [x] `/privacy-settings` — View/update privacy settings
+- [x] `/rate-limit-options` — Show options when rate limited
+- [x] `/release-notes` — View release notes
+- [x] `/reload-plugins` — Activate pending plugin changes
+- [x] `/remote-env` — Configure default remote environment
+- [x] `/remote-setup` — Remote setup configuration (gh auth status + Claude.ai/code link)
 - [x] `/rename` — Rename current conversation
-- [ ] `/resume` — Resume a previous conversation
-- [ ] `/rewind` — Restore code/conversation to a previous point
-- [ ] `/sandbox-toggle` — Toggle sandbox mode
-- [ ] `/skills` — List available skills
+- [x] `/resume`, `/continue` — Resume a previous conversation
+- [x] `/rewind`, `/checkpoint` — Restore code/conversation to a previous point
+- [x] `/sandbox-toggle` — Toggle sandbox mode (alias `/sandbox`)
+- [x] `/skills` — List available bundled skills (mirrors `commands/skills/SkillsMenu.tsx`; lists `bundled_skills.BUNDLED_SKILLS`, not slash commands)
 - [x] `/stats` — Usage statistics and activity
-- [ ] `/stickers` — Order stickers
+- [x] `/stickers` — Order stickers
 - [x] `/tag` — Toggle a searchable tag on the session
-- [ ] `/theme` — Change the theme
-- [ ] `/upgrade` — Upgrade to Max
-- [ ] `/vim` — Toggle Vim/Normal editing modes
-- [ ] `/voice` — Toggle voice mode
+- [x] `/theme` — Change the theme
+- [x] `/upgrade` — Upgrade to Max
+- [x] `/vim` — Toggle Vim/Normal editing modes
+- [x] `/voice` — Toggle voice mode
 - [ ] Feature-gated: `/buddy`, `/fork`, `/peers`, `/proactive`, `/torch`, `/workflows` (full), etc.
-- [ ] Internal: `/backfill-sessions`, `/break-cache`, `/bughunter`, `/commit`, `/commit-push-pr`, `/init-verifiers`, `/mock-limits`, `/version`, `/ultraplan`, `/autofix-pr`, etc.
+- [ ] Internal: `/backfill-sessions`, `/break-cache`, `/bughunter`, `/commit-push-pr`, `/init-verifiers`, `/mock-limits`, `/version`, `/ultraplan`, `/autofix-pr`, etc.
+- [x] `/commit` — Create a git commit (prompt-type with injected git context)
+- [ ] Full `/agents` parity for interactive TUI/editor flows, plugin sources, and full multi-source management UX
 
 ## 6. Built-in Tools
 
-### Tools implemented in Python (58 tools):
+### Tools implemented in Python (65 tools):
 
 - [x] `list_dir`
 - [x] `read_file`
@@ -424,12 +435,16 @@ Missing npm slash commands (from `src/commands/` — 80+ commands total):
 - [x] `team_delete`
 - [x] `send_message`
 - [x] `team_messages`
+- [x] `EnterPlanMode`
+- [x] `ExitPlanMode`
+- [x] `TaskOutput`
+- [x] `TaskStop`
 
 ### Tools in npm `tools.ts` not yet ported with full fidelity (40 tool dirs):
 
 Core tools needing full port:
-- [ ] `AgentTool` — Sub-agent spawning with built-in agents (explore, general-purpose, verification, plan, claudeCodeGuide, statusline), fork support, agent memory/snapshots, resume agent, color management
-- [ ] `SkillTool` — Skill execution with bundled skills
+- [x] `AgentTool` — Sub-agent spawning with built-in agents (explore, general-purpose, verification, plan, claudeCodeGuide, statusline) → `src/builtin_agents.py` — remaining: fork support, agent memory/snapshots, resume agent, color management
+- [x] `SkillTool` — Skill execution via slash commands and bundled skills → `src/agent_tools.py`, `src/agent_runtime.py`, `src/bundled_skills.py` — remaining: forked skill execution
 - [ ] `BriefTool` — Brief mode with attachments and file upload
 - [ ] `LSPTool` — Full upstream LSP fidelity beyond the current local heuristic runtime (server-backed diagnostics, go-to-definition, references, hover, symbol search, formatting)
 - [ ] `PowerShellTool` — Full PowerShell execution with security, path validation, CLM types, git safety
@@ -438,12 +453,12 @@ Core tools needing full port:
 - [ ] `McpAuthTool` — MCP authentication handling
 - [ ] `ConfigTool` — Full config management with supported settings list
 - [ ] `SyntheticOutputTool` — Synthetic output injection
-- [ ] `EnterPlanModeTool` — Enter plan mode with UI
-- [ ] `ExitPlanModeTool` — Exit plan mode with V2 flow
+- [x] `EnterPlanModeTool` — Enter plan mode → `src/agent_tools.py`
+- [x] `ExitPlanModeTool` — Exit plan mode → `src/agent_tools.py`
 - [ ] `EnterWorktreeTool` — Full worktree enter with UI
 - [ ] `ExitWorktreeTool` — Full worktree exit with UI
-- [ ] `TaskOutputTool` — Task output display
-- [ ] `TaskStopTool` — Stop a running task
+- [x] `TaskOutputTool` — Task output display → `src/agent_tools.py`
+- [x] `TaskStopTool` — Stop a running task → `src/agent_tools.py`
 
 Feature-gated tools:
 - [ ] `CronCreateTool` / `CronDeleteTool` / `CronListTool` — Cron scheduling (AGENT_TRIGGERS)
@@ -546,8 +561,8 @@ Missing:
 - [ ] Bundled plugin support (`plugins/bundledPlugins.ts`, `plugins/bundled/`)
 - [ ] Plugin lifecycle management
 - [ ] Plugin update/cache behavior
-- [ ] Skill discovery and execution (`skills/bundledSkills.ts`, `skills/loadSkillsDir.ts`, `skills/mcpSkillBuilders.ts`, `skills/bundled/`)
-- [ ] Bundled skill support
+- [x] Skill discovery and execution → `src/bundled_skills.py` (simplify, verify, debug, update-config) — remaining: loadSkillsDir, mcpSkillBuilders, disk-based SKILL.md loading
+- [x] Bundled skill support → `src/bundled_skills.py` — remaining: skillify, batch, loop, schedule, claude-api, chrome, and feature-gated skills
 - [ ] Full plugin and skill parity
 
 ## 10. Interactive UI / REPL / TUI
@@ -629,7 +644,7 @@ Missing:
 - [ ] API service (`services/api/` — 20+ files: claude client, dumpPrompts, errorUtils, filesApi, firstTokenDate, grove, logging, metricsOptOut, promptCacheBreakDetection, sessionIngress, usage, withRetry, etc.)
 - [ ] LSP service (`services/lsp/` — 7 files: LSPClient, LSPDiagnosticRegistry, LSPServerInstance, LSPServerManager, config, manager, passiveFeedback)
 - [ ] Tools service (`services/tools/` — 4 files: StreamingToolExecutor, toolExecution, toolHooks, toolOrchestration)
-- [ ] Compact service (`services/compact/` — 6 files: compact, autoCompact, microCompact, apiMicrocompact, sessionMemoryCompact, compactWarningHook)
+- [ ] Compact service (`services/compact/` — 6 files) — partially ported: compact → `src/compact.py`, microCompact → `src/microcompact.py`, sessionMemoryCompact → `src/session_memory_compact.py`; remaining: autoCompact trigger, apiMicrocompact, compactWarningHook
 - [ ] Auto-dream service (`services/autoDream/` — 4 files: autoDream, config, consolidationLock, consolidationPrompt)
 - [ ] Agent summary service (`services/AgentSummary/`)
 - [ ] Magic docs service (`services/MagicDocs/`)
@@ -691,21 +706,24 @@ Done:
 - [x] Basic file operations in tool implementations
 - [x] Basic git status snapshot
 - [x] Basic shell/subprocess handling
+- [x] Bundled small portable utilities — `utils/array.ts`, `utils/set.ts`, `utils/objectGroupBy.ts`, `utils/xml.ts`, `utils/uuid.ts` ported in `src/small_utils.py`
+- [x] Session-scoped env-var registry (`utils/sessionEnvVars.ts`) ported in `src/session_env_vars.py`, merged into spawned subprocess env via `_build_subprocess_env` (mirrors `utils/shell/bashProvider.ts`), and dropped on `/clear` via `clear_runtime_state` (mirrors `commands/clear/caches.ts`)
+- [x] Display formatters from `utils/format.ts` (`formatFileSize`, `formatSecondsShort`, `formatDuration`, `formatNumber`, `formatTokens`) ported in `src/format_utils.py`
 
 Missing major utility categories:
 
 - [ ] Shell utilities (`utils/bash/`, `utils/shell/`, `Shell.ts`, `ShellCommand.ts`)
-- [ ] Git operations (`utils/git.ts`, `utils/gitDiff.ts`, `utils/gitSettings.ts`, `utils/commitAttribution.ts`)
+- [ ] Git operations (`utils/git.ts`, `utils/gitDiff.ts`, `utils/gitSettings.ts`, `utils/commitAttribution.ts`) — partial: `findGitRoot`, `normalizeGitRemoteUrl`, `getRepoRemoteHash`, and `shouldIncludeGitInstructions` ported in `src/git_utils.py`
 - [ ] File operations (`utils/file.ts`, `utils/fileRead.ts`, `utils/fileHistory.ts`, `utils/fileStateCache.ts`, `utils/fsOperations.ts`, `utils/ripgrep.ts`, `utils/glob.ts`)
-- [ ] AI/Model utilities (`utils/modelCost.ts`, `utils/model/`, `utils/context.ts`, `utils/queryContext.ts`)
+- [ ] AI/Model utilities (`utils/modelCost.ts`, `utils/model/`, `utils/context.ts`, `utils/queryContext.ts`) — partial: modelCost ported in `src/model_cost.py`
 - [ ] Config/Settings (`utils/config.ts`, `utils/settings/`)
 - [ ] Message handling (`utils/messages.ts`, `utils/messages/`, `utils/messageQueueManager.ts`)
 - [ ] API/Network (`utils/api.ts`, `utils/http.ts`, `utils/proxy.ts`, `utils/auth.ts`)
 - [ ] Session management (`utils/sessionStorage.ts`, `utils/sessionState.ts`, `utils/sessionStart.ts`, `utils/sessionRestore.ts`)
 - [ ] Plugin/Skill utilities (`utils/plugins/`, `utils/skills/`)
 - [ ] Memory/Context (`utils/memory/`, `utils/claudemd.ts`, `utils/contextAnalysis.ts`)
-- [ ] IDE integration (`utils/ide.ts`, `utils/jetbrains.ts`)
-- [ ] Platform/OS (`utils/platform.ts`, `utils/terminal.ts`, `utils/systemDirectories.ts`)
+- [ ] IDE integration (`utils/ide.ts`, `utils/jetbrains.ts`) — partial: `utils/idePathConversion.ts` ported in `src/ide_path_conversion.py` (`WindowsToWSLConverter`, `checkWSLDistroMatch`)
+- [ ] Platform/OS (`utils/platform.ts`, `utils/terminal.ts`, `utils/systemDirectories.ts`) — partial: platform detection (`getPlatform`, `getWslVersion`, `getLinuxDistroInfo`, `detectVcs`) and `getSystemDirectories` ported in `src/platform_info.py`
 - [ ] Debugging (`utils/debug.ts`, `utils/diagLogs.ts`, `utils/log.ts`, `utils/profilerBase.ts`)
 - [ ] Telemetry (`utils/telemetry/`)
 - [ ] Deep link utilities (`utils/deepLink/`)
@@ -737,8 +755,8 @@ Missing:
 Working Python runtime today (21,193 lines across 51 source files, 10,480 lines across 37 test files):
 
 - [x] `src/main.py` (1,353 lines)
-- [x] `src/agent_runtime.py` (3,664 lines)
-- [x] `src/agent_tools.py` (2,994 lines)
+- [x] `src/agent_runtime.py` (4,318 lines)
+- [x] `src/agent_tools.py` (3,183 lines)
 - [x] `src/agent_prompting.py` (390 lines)
 - [x] `src/agent_context.py` (459 lines)
 - [x] `src/agent_context_usage.py` (356 lines)
@@ -768,6 +786,8 @@ Working Python runtime today (21,193 lines across 51 source files, 10,480 lines 
 - [x] `src/tokenizer_runtime.py` (202 lines)
 - [x] `src/workflow_runtime.py` (319 lines)
 - [x] `src/worktree_runtime.py` (448 lines)
+- [x] `src/builtin_agents.py` (426 lines)
+- [x] `src/microcompact.py` (236 lines)
 - [x] Plus 19 supporting modules
 
 Mirrored / scaffold areas needing real implementation:
@@ -785,13 +805,15 @@ Mirrored / scaffold areas needing real implementation:
 ### Tier 1 — Core Feature Gaps (highest user impact)
 - [x] Full BashTool security parity (sed validation, path validation, sandbox, destructive command warnings, command semantics) → `src/bash_security.py`
 - [x] LSP tool integration for code intelligence
-- [ ] Full AgentTool with built-in agent types (explore, general-purpose, verification, plan)
+- [x] Full AgentTool with built-in agent types (explore, general-purpose, verification, plan, statusline-setup, claude-code-guide) → `src/builtin_agents.py`, `src/agent_tools.py`, `src/agent_runtime.py`
 - [ ] Auto-compact and context collapse from `query.ts`
-- [ ] Full compact service (autoCompact, microCompact, sessionMemoryCompact)
+- [x] Microcompact service (time-based tool-result clearing) → `src/microcompact.py`
+- [x] Compact PTL retry loop and circuit-breaker tracking → `src/compact.py`
+- [ ] Full compact service (sessionMemoryCompact, cached microcompact)
 - [ ] Interactive REPL improvements
 
 ### Tier 2 — Important Feature Gaps
-- [ ] SkillTool with bundled skills
+- [x] SkillTool for slash command execution → `src/agent_tools.py`, `src/agent_runtime.py`
 - [ ] Full MCP service parity (auth, permissions, config, registry)
 - [ ] Plugin discovery, loading, and installation
 - [ ] Real remote session management (WebSocket, bridge)
@@ -800,6 +822,7 @@ Mirrored / scaffold areas needing real implementation:
 - [ ] Token budget calculations
 
 ### Tier 3 — Nice-to-Have Features
+- [x] Local web GUI (FastAPI + vanilla JS SPA) → `src/gui/__main__.py`, `src/gui/server.py`, `src/gui/static/*`; launch with `python -m src.gui` or `claw-code-gui`
 - [ ] TUI/Ink component library
 - [ ] Voice mode
 - [ ] VIM mode and keybinding system

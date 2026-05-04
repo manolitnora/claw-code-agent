@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import json
 import sys
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -118,6 +119,62 @@ class AgentSlashCommandTests(unittest.TestCase):
         self.assertIn('# Token Budget', result.final_output)
         self.assertIn('Hard input limit', result.final_output)
         self.assertIn('Auto-compact buffer', result.final_output)
+
+    def test_agents_command_lists_and_shows_custom_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as home_dir, tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            agents_dir = workspace / '.claude' / 'agents'
+            agents_dir.mkdir(parents=True)
+            (agents_dir / 'reviewer.md').write_text(
+                (
+                    '---\n'
+                    'name: reviewer\n'
+                    'description: "Review implementation changes carefully."\n'
+                    'tools: read_file, grep_search\n'
+                    'model: test-child-model\n'
+                    '---\n\n'
+                    'Inspect code changes and summarize risks.\n'
+                ),
+                encoding='utf-8',
+            )
+            with patch.dict(os.environ, {'HOME': home_dir}):
+                agent = LocalCodingAgent(
+                    model_config=ModelConfig(model='test-model'),
+                    runtime_config=AgentRuntimeConfig(cwd=workspace),
+                )
+                list_result = agent.run('/agents')
+                detail_result = agent.run('/agents show reviewer')
+        self.assertIn('# Agents', list_result.final_output)
+        self.assertIn('reviewer [projectSettings]', list_result.final_output)
+        self.assertIn('# Agent: reviewer', detail_result.final_output)
+        self.assertIn('Inspect code changes and summarize risks.', detail_result.final_output)
+
+    def test_agents_command_can_create_update_and_delete_project_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as home_dir, tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            with patch.dict(os.environ, {'HOME': home_dir}):
+                agent = LocalCodingAgent(
+                    model_config=ModelConfig(model='test-model'),
+                    runtime_config=AgentRuntimeConfig(cwd=workspace),
+                )
+                create_result = agent.run(
+                    '/agents create reviewer :: Review code changes carefully. :: Inspect code changes and summarize risks.'
+                )
+                self.assertIn('action=created', create_result.final_output)
+                self.assertTrue((workspace / '.claude' / 'agents' / 'reviewer.md').exists())
+
+                update_result = agent.run(
+                    '/agents update reviewer Updated review description :: Focus on regressions and missing tests.'
+                )
+                self.assertIn('action=updated', update_result.final_output)
+
+                detail_result = agent.run('/agents reviewer')
+                self.assertIn('Updated review description', detail_result.final_output)
+                self.assertIn('Focus on regressions and missing tests.', detail_result.final_output)
+
+                delete_result = agent.run('/agents delete reviewer')
+                self.assertIn('action=deleted', delete_result.final_output)
+                self.assertFalse((workspace / '.claude' / 'agents' / 'reviewer.md').exists())
 
     def test_mcp_and_resource_commands_render_local_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

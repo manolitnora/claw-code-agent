@@ -11,6 +11,21 @@ from .agent_context import (
     set_system_prompt_injection,
 )
 from .agent_manager import AgentManager
+from .agent_registry import (
+    AgentLoadError,
+    AgentMutationResult,
+    AgentRegistrySnapshot,
+    create_agent_definition,
+    delete_agent_definition,
+    find_agent_definition,
+    load_agent_registry,
+    normalize_mutable_source,
+    render_agent_detail,
+    render_agent_mutation,
+    render_agents_report,
+    scaffold_agent_definition,
+    update_agent_definition,
+)
 from .agent_runtime import LocalCodingAgent
 from .agent_session import AgentMessage, AgentSessionState
 from .agent_tools import build_tool_context, default_tool_registry, execute_tool
@@ -42,7 +57,10 @@ from .tools import PORTED_TOOLS, build_tool_backlog
 __all__ = [
     'AgentContextSnapshot',
     'AgentManager',
+    'AgentLoadError',
+    'AgentMutationResult',
     'AgentPermissions',
+    'AgentRegistrySnapshot',
     'AgentRunResult',
     'AgentRuntimeConfig',
     'AccountProfile',
@@ -109,16 +127,26 @@ __all__ = [
     'clear_context_caches',
     'clear_token_counter_cache',
     'count_tokens',
+    'create_agent_definition',
     'calculate_token_budget',
     'default_tool_registry',
+    'delete_agent_definition',
     'describe_token_counter',
     'estimate_chat_overhead',
     'execute_tool',
+    'find_agent_definition',
     'format_token_budget',
     'get_system_context',
     'get_user_context',
+    'load_agent_registry',
     'load_session',
+    'normalize_mutable_source',
+    'render_agent_detail',
+    'render_agent_mutation',
+    'render_agents_report',
     'run_parity_audit',
+    'scaffold_agent_definition',
     'save_session',
     'set_system_prompt_injection',
+    'update_agent_definition',
 ]

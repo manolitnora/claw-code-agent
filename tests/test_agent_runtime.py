@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -112,6 +113,37 @@ def make_recording_streaming_urlopen_side_effect(
 
 
 class AgentRuntimeTests(unittest.TestCase):
+    def test_custom_project_agent_is_resolved_for_child_agent_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as home_dir, tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            agents_dir = workspace / '.claude' / 'agents'
+            agents_dir.mkdir(parents=True)
+            (agents_dir / 'Explore.md').write_text(
+                (
+                    '---\n'
+                    'name: Explore\n'
+                    'description: "Project-specific explore agent."\n'
+                    'tools: read_file, grep_search\n'
+                    'model: child-model\n'
+                    'initialPrompt: Start with a repository scan.\n'
+                    '---\n\n'
+                    'Search the repository and report findings.\n'
+                ),
+                encoding='utf-8',
+            )
+            with patch.dict(os.environ, {'HOME': home_dir}):
+                agent = LocalCodingAgent(
+                    model_config=ModelConfig(model='parent-model'),
+                    runtime_config=AgentRuntimeConfig(cwd=workspace),
+                )
+                agent_def = agent._resolve_agent_definition({'subagent_type': 'Explore'})
+                child_model = agent._resolve_child_model_config({}, agent_def)
+                child_tools = agent._filter_tools_for_agent(agent_def)
+            self.assertEqual(agent_def.source, 'projectSettings')
+            self.assertEqual(agent_def.initial_prompt, 'Start with a repository scan.')
+            self.assertEqual(child_model.model, 'child-model')
+            self.assertEqual(sorted(child_tools), ['grep_search', 'read_file'])
+
     def test_openai_client_parses_tool_calls(self) -> None:
         responses = [
             {
@@ -285,6 +317,46 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(result.turns, 0)
         self.assertEqual(result.tool_calls, 0)
         self.assertIn('# Permissions', result.final_output)
+
+    def test_slash_skills_lists_bundled_skills(self) -> None:
+        from src.bundled_skills import get_bundled_skills
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = LocalCodingAgent(
+                model_config=ModelConfig(model='Qwen/Qwen3-Coder-30B-A3B-Instruct'),
+                runtime_config=AgentRuntimeConfig(cwd=Path(tmp_dir)),
+            )
+            result = agent.run('/skills')
+        self.assertEqual(result.turns, 0)
+        self.assertEqual(result.tool_calls, 0)
+        self.assertIn('Available Skills', result.final_output)
+        for skill in get_bundled_skills():
+            if skill.user_invocable:
+                self.assertIn(skill.name, result.final_output)
+        # Slash command names (e.g. 'permissions') must NOT appear — that was
+        # the old buggy behavior the upstream `/skills` command never did.
+        self.assertNotIn('/permissions', result.final_output)
+
+    def test_clear_runtime_state_drops_session_env_vars(self) -> None:
+        from src.session_env_vars import (
+            clear_session_env_vars,
+            get_session_env_vars,
+            set_session_env_var,
+        )
+
+        clear_session_env_vars()
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                agent = LocalCodingAgent(
+                    model_config=ModelConfig(model='Qwen/Qwen3-Coder-30B-A3B-Instruct'),
+                    runtime_config=AgentRuntimeConfig(cwd=Path(tmp_dir)),
+                )
+                set_session_env_var('CLAW_CLEAR_TEST', 'before')
+                self.assertEqual(get_session_env_vars()['CLAW_CLEAR_TEST'], 'before')
+                agent.clear_runtime_state()
+                self.assertNotIn('CLAW_CLEAR_TEST', get_session_env_vars())
+        finally:
+            clear_session_env_vars()
 
     def test_agent_persists_session_and_can_resume(self) -> None:
         responses = [

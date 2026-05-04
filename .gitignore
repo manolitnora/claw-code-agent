@@ -36,3 +36,4 @@ e-commerce
 benchmarks/data/*.jsonl
 benchmarks/data/manifest.json
 /IDENTITY.md
+claude-code-sourcemap-main
