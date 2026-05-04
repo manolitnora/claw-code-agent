@@ -2026,6 +2026,41 @@ def _run_bash(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     )
 
 
+_BINARY_CONTENT_TYPES = {
+    'application/pdf',
+    'application/octet-stream',
+    'application/zip',
+    'application/x-tar',
+    'application/x-gzip',
+    'application/gzip',
+    'application/x-bzip2',
+    'application/wasm',
+    'application/x-protobuf',
+}
+
+
+def _looks_binary(raw: bytes, content_type: str | None) -> bool:
+    """True if the response is unlikely to be readable text.
+
+    Either the Content-Type announces binary, or the byte stream contains
+    NUL bytes / a high ratio of non-printable bytes. Catches PDFs even when
+    they are served with a generic Content-Type header.
+    """
+    if content_type:
+        ct = content_type.split(';', 1)[0].strip().lower()
+        if ct in _BINARY_CONTENT_TYPES or ct.startswith(('image/', 'video/', 'audio/')):
+            return True
+    if not raw:
+        return False
+    if raw[:5] == b'%PDF-':
+        return True
+    sample = raw[:4096]
+    if b'\x00' in sample:
+        return True
+    nonprintable = sum(1 for b in sample if b < 9 or 13 < b < 32 or b == 127)
+    return (nonprintable / len(sample)) > 0.10
+
+
 def _web_fetch(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     raw_url = _require_string(arguments, 'url')
     max_chars = _coerce_int(arguments, 'max_chars', context.max_output_chars)
@@ -2040,9 +2075,22 @@ def _web_fetch(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
         with urllib.request.urlopen(request, timeout=context.command_timeout_seconds) as response:
             raw_bytes = response.read(max_chars + 1)
             content_type = response.headers.get_content_type() if hasattr(response, 'headers') else None
-            text = raw_bytes.decode('utf-8', errors='replace')
     except (urllib.error.URLError, OSError) as exc:
         raise ToolExecutionError(f'Failed to fetch {raw_url}: {exc}') from exc
+    # Binary payloads (PDFs, archives, images) decode to UTF-8 garbage with
+    # `errors='replace'`. That garbage looks plausibly like prose to the
+    # model, which then hallucinates content from it. Refuse loudly instead
+    # of returning faux-text — this is the path that produced fabricated
+    # paper titles / authors when the model was given an arxiv PDF URL.
+    if _looks_binary(raw_bytes, content_type):
+        raise ToolExecutionError(
+            f'Fetched {raw_url} returned non-text content '
+            f'(content_type={content_type!r}, {len(raw_bytes)} bytes). '
+            'web_fetch only extracts UTF-8 text. For PDFs use bash with '
+            'pdftotext; for images use read_file. Do NOT proceed as if '
+            'the content were readable — it is not.'
+        )
+    text = raw_bytes.decode('utf-8', errors='replace')
     truncated = len(text) > max_chars
     rendered = text[:max_chars]
     if truncated:
