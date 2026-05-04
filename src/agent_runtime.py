@@ -4119,7 +4119,7 @@ class LocalCodingAgent:
         # parent unless caller explicitly restricts. allow_write / allow_shell
         # default to inherit — caller can pass False to restrict, but we don't
         # silently cripple children. allow_destructive inherits from parent.
-        if agent_def is not None and agent_def.disallowed_tools and (
+        if agent_def.disallowed_tools and (
             'edit_file' in agent_def.disallowed_tools
             or 'write_file' in agent_def.disallowed_tools
         ):
