@@ -23,8 +23,38 @@ from src.agent_state_machine import (
 )
 
 
+import re as _re
+
+# Paths whose names strongly indicate secret-bearing content. Reading these
+# via the auto-Read path is refused at the operator layer — the prior
+# behavior (read, redact at ingestion) is a band-aid; refusing to ingest is
+# the structural fix. Bash can still read them with explicit intent if the
+# user really wants to.
+_SECRET_BEARING_PATH_PATTERNS = (
+    _re.compile(r'(^|/)\.env(\.[^/]*)?$'),               # .env, .env.local, ...
+    _re.compile(r'\.pem$'),
+    _re.compile(r'\.key$'),
+    _re.compile(r'(^|/)id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$'),
+    _re.compile(r'(^|/)credentials(\.json|\.yaml|\.yml)?$', _re.IGNORECASE),
+    _re.compile(r'(^|/)secrets?(\.json|\.yaml|\.yml|\.toml)?$', _re.IGNORECASE),
+    _re.compile(r'(^|/)\.aws/credentials$'),
+    _re.compile(r'(^|/)\.netrc$'),
+)
+
+
+def _is_secret_bearing_path(path: Path) -> bool:
+    """True if path's name/segments match a known secret-bearing convention."""
+    text = str(path)
+    return any(p.search(text) for p in _SECRET_BEARING_PATH_PATTERNS)
+
+
 class ReadFileOperator:
     """Reads a UTF-8 text file. Wraps Path.read_text in the Operator interface.
+
+    Refuses paths that match `_SECRET_BEARING_PATH_PATTERNS` — reading those
+    via the model-driven Read path poisons message history regardless of
+    downstream redaction. If the user genuinely needs that content, they can
+    use bash with explicit intent.
 
     Action shape:
         Action(kind='tool_call',
@@ -52,6 +82,20 @@ class ReadFileOperator:
             )
         max_bytes = action.payload.get('max_bytes')
         path = Path(path_str).expanduser()
+        if _is_secret_bearing_path(path):
+            return Observation(
+                action_id=action.id, kind='error',
+                payload={
+                    'error': (
+                        f'refused to read secret-bearing path: {path}. '
+                        'Reading this via the model-driven Read path would '
+                        'poison message history. Use bash with explicit '
+                        'intent if this content is genuinely needed.'
+                    ),
+                    'path': str(path),
+                    'refused_reason': 'secret_bearing_path',
+                },
+            )
         if not path.exists():
             return Observation(
                 action_id=action.id, kind='error',
