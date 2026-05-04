@@ -155,11 +155,59 @@ def _build_response_format(
     }
 
 
+# DNS-retry policy. Live failure on 2026-05-04 07:32: a transient
+# socket.gaierror (errno 8 / EAI_NONAME) wrapped in URLError killed
+# the turn at SAVE prompt, despite `nslookup openrouter.ai` succeeding
+# moments later. Connection-refused / timeout / HTTPError are NOT
+# retried here — masking those is worse than failing fast. Only the
+# specific transient-DNS shape is absorbed.
+_DNS_RETRY_DELAYS_SECONDS = (0.1, 0.3)
+"""Sleep before retry N. Total worst-case added latency on persistent
+DNS failure: 0.4s before raising; transient blips clear on the first
+retry. Tuple length = max retry count."""
+
+
+def _is_transient_dns_failure(exc: BaseException) -> bool:
+    """True iff the exception is a URLError caused by a socket.gaierror
+    (DNS resolution failure). All other URLError reasons (connection
+    refused, timeout, etc.) return False — those signal real problems
+    and must surface immediately, not be masked by retry.
+    """
+    import socket as _socket
+    from urllib.error import URLError as _URLError
+    if not isinstance(exc, _URLError):
+        return False
+    return isinstance(exc.reason, _socket.gaierror)
+
+
 class OpenAICompatClient:
     """Minimal OpenAI-compatible chat client for local model servers."""
 
     def __init__(self, config: ModelConfig) -> None:
         self.config = config
+
+    def _urlopen_with_dns_retry(self, req, timeout):
+        """Open the request, transparently retrying transient DNS failures.
+
+        Sleeps from _DNS_RETRY_DELAYS_SECONDS between attempts.
+        Surfaces the original URLError on persistent failure, so the
+        caller's existing exception handling (which wraps URLError into
+        OpenAICompatError) keeps working unchanged.
+        """
+        import time as _time
+        last_exc = None
+        for delay in (0.0,) + _DNS_RETRY_DELAYS_SECONDS:
+            if delay > 0:
+                _time.sleep(delay)
+            try:
+                return request.urlopen(req, timeout=timeout)
+            except error.URLError as exc:
+                if not _is_transient_dns_failure(exc):
+                    raise
+                last_exc = exc
+        # Exhausted retries on persistent DNS failure — re-raise the last.
+        assert last_exc is not None
+        raise last_exc
 
     def complete(
         self,
@@ -267,7 +315,7 @@ class OpenAICompatClient:
             method='POST',
         )
         try:
-            with request.urlopen(req, timeout=self.config.timeout_seconds) as response:
+            with self._urlopen_with_dns_retry(req, timeout=self.config.timeout_seconds) as response:
                 yield StreamEvent(type='message_start')
                 for event_payload in self._iter_sse_payloads(response):
                     yield from self._parse_stream_payload(event_payload)
@@ -303,7 +351,7 @@ class OpenAICompatClient:
             method='POST',
         )
         try:
-            with request.urlopen(req, timeout=self.config.timeout_seconds) as response:
+            with self._urlopen_with_dns_retry(req, timeout=self.config.timeout_seconds) as response:
                 raw = response.read()
         except error.HTTPError as exc:
             detail = exc.read().decode('utf-8', errors='replace')
