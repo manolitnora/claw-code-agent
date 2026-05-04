@@ -1812,6 +1812,60 @@ def _refuse_if_secret_bearing(target: Path) -> None:
 # iterative work; further iteration is a tweak loop.
 _EDIT_LOOP_LIMIT = 5
 
+# Markdown-churn threshold: refuse further summary-shape .md writes after
+# this many in one context. Catches the Latti pattern where each iteration
+# emitted a new "CRITICAL_FINDING_*.md", "SESSION_SUMMARY_*.md",
+# "QUICK_REFERENCE.md", "gaps_filled_*.md" etc. as fake progress markers.
+# Each churn doc is a different path so it doesn't trip the per-path
+# edit-loop limit, but the cumulative count tells the story.
+_MD_CHURN_LIMIT = 4
+
+# Filename signatures that look like self-emitted summary docs.
+_CHURN_FILENAME_PATTERNS = re.compile(
+    r'(?ix)('
+    r'summary|finding|critical|session_|gaps?[-_]filled|quick[-_]reference'
+    r'|deliverables?|status[-_]report|progress[-_]report|wrap[-_]up'
+    r'|completion[-_]report|implementation[-_]summary|final[-_]summary'
+    r')'
+)
+# Conventional doc filenames that should NEVER be flagged as churn.
+_DOC_PATH_ALLOWLIST = re.compile(r'(?i)(^|/)(readme|changelog|license|contributing)\b')
+
+
+def _is_churn_markdown(target: Path) -> bool:
+    """True if the path looks like a summary/findings markdown likely
+    emitted as fake-progress churn rather than real documentation.
+    """
+    name = target.name
+    if not name.lower().endswith('.md'):
+        return False
+    if _DOC_PATH_ALLOWLIST.search(str(target)):
+        return False
+    # Files in docs/ are legitimate docs by convention.
+    if 'docs' in {p.lower() for p in target.parts}:
+        return False
+    return bool(_CHURN_FILENAME_PATTERNS.search(name))
+
+
+def _track_churn_and_check(target: Path, context: ToolExecutionContext) -> None:
+    """Refuse if too many summary-shape markdown files written in this
+    context. Counter is reused from edit_history under a sentinel key so
+    no new dataclass field is needed.
+    """
+    if not _is_churn_markdown(target):
+        return
+    counter_key = '__churn_md_count__'
+    context.edit_history[counter_key] = context.edit_history.get(counter_key, 0) + 1
+    if context.edit_history[counter_key] > _MD_CHURN_LIMIT:
+        raise ToolExecutionError(
+            f'churn-doc guard: refused to write {target.name} — this is '
+            f'the {context.edit_history[counter_key]}-th summary/findings '
+            f'markdown in this session (limit {_MD_CHURN_LIMIT}). '
+            'Writing more summaries is not progress; it is performance. '
+            'If the work is genuinely done, one summary suffices. If it '
+            'is not done, write code or tests, not another summary.'
+        )
+
 
 def _track_write_and_check_loop(target: Path, context: ToolExecutionContext) -> None:
     """Increment edit count for `target` and refuse if loop limit exceeded.
@@ -1988,6 +2042,7 @@ def _write_file(arguments: dict[str, Any], context: ToolExecutionContext) -> str
     content = arguments.get('content')
     if not isinstance(content, str):
         raise ToolExecutionError('content must be a string')
+    _track_churn_and_check(target, context)
     _track_write_and_check_loop(target, context)
     previous_text: str | None = None
     previous_sha256: str | None = None
@@ -2211,6 +2266,35 @@ def _grep_search(arguments: dict[str, Any], context: ToolExecutionContext) -> st
     return '\n'.join(hits) if hits else '(no matches)'
 
 
+def _bash_self_authored_banner(command: str, context: ToolExecutionContext) -> str:
+    """Banner prepended to bash output when the command references a path
+    the agent wrote earlier in this session.
+
+    Catches the case where the agent runs a script it just wrote and cites
+    the output as evidence — e.g. `python3 retrieval_accuracy_test.py`
+    where the test was authored five turns ago. Without this banner, the
+    output looks indistinguishable from running an external program.
+    """
+    if not context.self_authored_paths:
+        return ''
+    referenced: list[str] = []
+    for path in context.self_authored_paths:
+        # Match the absolute path or its basename in the command. Loose
+        # match — false positives are mild (extra warning) but false
+        # negatives miss the whole point.
+        basename = Path(path).name
+        if path in command or (basename and basename in command):
+            referenced.append(basename)
+    if not referenced:
+        return ''
+    names = ', '.join(sorted(set(referenced)))
+    return (
+        f'[self-authored: this command runs files written by the agent '
+        f'earlier in this session ({names}). Output is not an '
+        f'independent measurement. Treat with skepticism.]\n'
+    )
+
+
 def _run_bash(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     command = _require_string(arguments, 'command')
     _ensure_shell_allowed(command, context)
@@ -2226,6 +2310,7 @@ def _run_bash(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     )
     stdout = completed.stdout or ''
     stderr = completed.stderr or ''
+    banner = _bash_self_authored_banner(command, context)
     payload = [
         f'exit_code={completed.returncode}',
         '[stdout]',
@@ -2233,8 +2318,11 @@ def _run_bash(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
         '[stderr]',
         stderr.rstrip(),
     ]
+    rendered = '\n'.join(payload).strip()
+    if banner:
+        rendered = banner + rendered
     return (
-        _truncate_output('\n'.join(payload).strip(), context.max_output_chars),
+        _truncate_output(rendered, context.max_output_chars),
         {
             'action': 'bash',
             'command': command,
