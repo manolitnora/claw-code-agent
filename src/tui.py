@@ -103,6 +103,15 @@ try:
 except Exception:
     _sanitize = None  # type: ignore[assignment]
 
+# Redaction for secret-shaped tokens in displayed output. tui_heal handles
+# generic sanitization (ANSI scrubbing, etc.); this layer specifically
+# closes the message-history vs. terminal-display divergence — a token that
+# was redacted in the model's view should not leak via the TUI preview line.
+try:
+    from .agent_state_machine import redact_secrets as _redact_secrets
+except Exception:
+    _redact_secrets = None  # type: ignore[assignment]
+
 
 def _tui_error_log_path() -> str:
     """Where _log_swallowed appends entries.
@@ -702,6 +711,11 @@ def tool_result(name: str, summary: str) -> None:
             summary = _sanitize(summary)
         except Exception as exc:
             _log_swallowed('tui.tool_result.sanitize', exc)
+    if _redact_secrets is not None:
+        try:
+            summary = _redact_secrets(summary)
+        except Exception as exc:
+            _log_swallowed('tui.tool_result.redact', exc)
 
     # Count lines for expand hint
     n_lines = summary.count('\n') + 1
@@ -728,6 +742,11 @@ def tool_error(name: str, error: str) -> None:
             error = _sanitize(error)
         except Exception as exc:
             _log_swallowed('tui.tool_error.sanitize', exc)
+    if _redact_secrets is not None:
+        try:
+            error = _redact_secrets(error)
+        except Exception as exc:
+            _log_swallowed('tui.tool_error.redact', exc)
     _w(f'{RED}  ⎿ {_truncate_visible(error, 120)}{RESET}\n')
     _w(f'{DARK_GRAY}  {"─" * (_cols() - 2)}{RESET}\n')
 
