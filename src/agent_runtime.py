@@ -5777,6 +5777,76 @@ class LocalCodingAgent:
             # Fail silent — must never break the model loop
             pass
 
+    def _compute_response_quality(self, result: AgentRunResult) -> int:
+        """Compute response quality score (0-100) based on response characteristics.
+        
+        Evaluates:
+        - Tool usage (20 points): Did the agent use tools?
+        - Conciseness (10 points): Is the response reasonably sized?
+        - No anti-patterns (10 points): Avoids common failure modes
+        - No trailing questions (10 points): Doesn't end with permission-seeking
+        - No permission asking (10 points): Doesn't ask for permission
+        - Substantive output (40 points): Has meaningful final output
+        
+        Returns: 0-100 score
+        """
+        try:
+            score = 0
+            final_output = getattr(result, 'final_output', '') or ''
+            
+            # Tool usage (20 points)
+            if len(result.tool_calls) > 0:
+                score += 20
+            
+            # Conciseness (10 points) - reasonable length
+            output_len = len(final_output.strip())
+            if 50 < output_len < 5000:
+                score += 10
+            elif output_len > 0:
+                score += 5  # Partial credit for any output
+            
+            # No anti-patterns (10 points)
+            anti_patterns = [
+                'i cannot', 'i am unable', 'i do not have access',
+                'i cannot help', 'i cannot provide', 'i cannot create',
+                'i cannot write', 'i cannot generate', 'i cannot execute',
+            ]
+            has_anti_pattern = any(
+                pattern in final_output.lower() 
+                for pattern in anti_patterns
+            )
+            if not has_anti_pattern:
+                score += 10
+            
+            # No trailing questions (10 points)
+            if final_output.strip() and not final_output.strip().endswith('?'):
+                score += 10
+            
+            # No permission asking (10 points)
+            permission_phrases = [
+                'would you like', 'do you want', 'should i',
+                'may i', 'can i', 'shall i', 'would you prefer',
+            ]
+            asks_permission = any(
+                phrase in final_output.lower()
+                for phrase in permission_phrases
+            )
+            if not asks_permission:
+                score += 10
+            
+            # Substantive output (40 points)
+            if output_len > 100:
+                score += 40
+            elif output_len > 50:
+                score += 20
+            elif output_len > 0:
+                score += 10
+            
+            return min(100, score)
+        except Exception:
+            # Default to neutral score on error
+            return 50
+
     def _record_self_axis_outcome(self, result: AgentRunResult) -> None:
         """Record outcome of a self-axis task for feedback loop analysis.
         
@@ -5794,6 +5864,9 @@ class LocalCodingAgent:
             sys.path.insert(0, str(latti_home / 'lib'))
             from outcome_recorder import record_task_outcome  # type: ignore[import-not-found]
             
+            # Compute response quality score
+            quality_score = self._compute_response_quality(result)
+            
             # Check if this was a self-axis task (indicated by rotation activation)
             # We detect this by checking if the prompt contained self-axis markers
             # For now, we record all outcomes and let the recorder filter
@@ -5806,6 +5879,7 @@ class LocalCodingAgent:
                     'turns': result.turns,
                     'tool_calls': len(result.tool_calls),
                     'stop_reason': result.stop_reason,
+                    'quality_score': quality_score,
                 }
             )
         except Exception:

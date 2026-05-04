@@ -2142,6 +2142,61 @@ def _tool_search(arguments: dict[str, Any], context: ToolExecutionContext) -> st
     return '\n'.join(lines)
 
 
+def _recall_memory(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
+    """Search Latti's persistent memory for relevant scars/SOPs/lessons.
+
+    Routes (query, kind, limit) into LattiMemoryStore.recall over the
+    memory directory at LATTI_MEMORY_DIR (default ~/.latti/memory).
+    Returns a formatted text block the LLM can read; empty matches
+    return an explicit "no matching memories" sentence rather than an
+    empty string (so the LLM doesn't misread silence as an error).
+
+    Tested by tests/test_recall_memory_tool.py + test_memory_recall.py.
+    """
+    del context  # tool reads from filesystem, not workspace context
+    query = _require_string(arguments, 'query').strip()
+    if not query:
+        return 'No query provided.'
+    kind = arguments.get('kind') if isinstance(arguments.get('kind'), str) else None
+    limit = _coerce_int(arguments, 'limit', 5)
+    if limit < 1:
+        limit = 1
+    if limit > 20:
+        limit = 20
+
+    memory_dir_override = os.environ.get('LATTI_MEMORY_DIR')
+    memory_dir = (
+        Path(memory_dir_override)
+        if memory_dir_override
+        else Path.home() / '.latti' / 'memory'
+    )
+    if not memory_dir.exists():
+        return 'No matching memories found (memory directory does not exist).'
+
+    try:
+        from .state_machine_memory import LattiMemoryStore
+        store = LattiMemoryStore(memory_dir)
+        results = store.recall(query, kind=kind, limit=limit)  # type: ignore[arg-type]
+    except Exception as exc:
+        return f'Memory recall failed: {exc!r}'
+
+    if not results:
+        return f'No matching memories found for query={query!r} kind={kind or "any"}.'
+
+    lines = [f'# Memory recall — {len(results)} match(es) for {query!r}']
+    if kind:
+        lines.append(f'(filtered to kind={kind})')
+    lines.append('')
+    for rec in results:
+        lines.append(f'## [{rec.kind}] {rec.id}')
+        body_preview = rec.body.strip()
+        if len(body_preview) > 600:
+            body_preview = body_preview[:597] + '...'
+        lines.append(body_preview)
+        lines.append('')
+    return '\n'.join(lines).rstrip() + '\n'
+
+
 def _sleep(arguments: dict[str, Any], context: ToolExecutionContext) -> str:
     seconds = _coerce_float(arguments, 'seconds', 0.0)
     if seconds < 0.0 or seconds > 5.0:
