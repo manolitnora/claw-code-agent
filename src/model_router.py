@@ -164,13 +164,32 @@ _HEAVY_PATTERNS = [
     re.compile(r'(?i)\b(plan|strategy|approach|think through)\b'),
 ]
 
-# Patterns that indicate simple mechanical work (→ light)
+# Patterns that indicate simple mechanical work (→ light).
+# Split into _LIGHT_EDIT (file-modification verbs) and _LIGHT_OTHER
+# (read, query, build) so we can promote edit patterns to HEAVY when
+# they appear with code context. Edit-fidelity (whitespace, indent,
+# exact-string match) matters more than read-cost; Sonnet preserves
+# these reliably while Haiku occasionally drops trailing newlines or
+# reflows indentation on supposedly-verbatim edit_file operations.
+_LIGHT_EDIT_PATTERNS = [
+    re.compile(r'(?i)\b(rename|move|copy|delete|remove|add a line|change .* to)\b'),
+]
 _LIGHT_PATTERNS = [
     re.compile(r'(?i)\b(read|cat|grep|find|list|show|check|ls|look at)\b'),
-    re.compile(r'(?i)\b(rename|move|copy|delete|remove|add a line|change .* to)\b'),
+    *_LIGHT_EDIT_PATTERNS,
     re.compile(r'(?i)\b(run|execute|test|compile|build|make)\b'),
     re.compile(r'(?i)\b(format|lint|fix (typo|indent|whitespace))\b'),
     re.compile(r'(?i)\b(what (is|are) the|how many|count|size of)\b'),
+]
+
+# Code-context signals — when present, light-edit patterns promote to
+# heavy. Match common code-domain words plus language-specific file
+# extensions. Tightened deliberately: just "list" or "test" alone
+# isn't code context (those are also data-list and verb senses).
+_CODE_CONTEXT_PATTERNS = [
+    re.compile(r'(?i)\b(function|class|method|module|variable|import|decorator|interface|enum|struct|trait)\b'),
+    re.compile(r'\.(?:py|ts|tsx|js|jsx|go|rs|java|cpp|c|h|hpp|rb|php|swift|kt|scala|sh|bash|zsh|sql|yaml|toml|json|md)\b'),
+    re.compile(r'(?i)\b(line\s+\d+|src/|test_\w+|tests/|\.git/)\b'),
 ]
 
 # Patterns for trivial classification tasks (→ micro)
@@ -272,6 +291,21 @@ class ModelRouter:
         # Light: mechanical operations
         light_score = sum(1 for p in _LIGHT_PATTERNS if p.search(user_message))
         if light_score >= 1:
+            # Edit-fidelity promotion (C in the loop-discipline upgrades).
+            # If a LIGHT-edit verb fires alongside any code-context signal,
+            # promote to HEAVY: Haiku-class fidelity on edit_file is
+            # noticeably weaker than Sonnet's, and the edit will modify
+            # files where whitespace/indent/exact-match correctness
+            # matters. Pure-read LIGHT patterns stay LIGHT regardless of
+            # code context — reads are genuinely cheap.
+            edit_signal = any(p.search(user_message) for p in _LIGHT_EDIT_PATTERNS)
+            code_signal = any(p.search(user_message) for p in _CODE_CONTEXT_PATTERNS)
+            if edit_signal and code_signal:
+                return self._decide(
+                    Tier.HEAVY,
+                    "code edit detected (light-edit verb + code context) — promoted for edit fidelity",
+                    0.85,
+                )
             return self._decide(Tier.LIGHT, f"mechanical task ({light_score} signals)", 0.8)
 
         # ── Context-based fallback ──
