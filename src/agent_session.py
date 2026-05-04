@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from .agent_state_machine import redact_secrets
 from .agent_types import UsageStats
 
 JSONDict = dict[str, Any]
@@ -335,6 +336,7 @@ class AgentSessionState:
         )
 
     def append_tool(self, name: str, tool_call_id: str, content: str) -> None:
+        content = redact_secrets(content)
         self.messages.append(
             AgentMessage(
                 role='tool',
@@ -400,10 +402,11 @@ class AgentSessionState:
         merged_metadata = _advance_lineage_revision(merged_metadata)
         if metadata:
             merged_metadata.update(metadata)
+        new_content = redact_secrets(message.content + delta)
         self.messages[index] = replace(
             message,
-            content=message.content + delta,
-            blocks=_tool_blocks(message.name, message.tool_call_id, message.content + delta),
+            content=new_content,
+            blocks=_tool_blocks(message.name, message.tool_call_id, new_content),
             metadata=merged_metadata,
         )
 
@@ -415,6 +418,7 @@ class AgentSessionState:
         metadata: dict[str, Any] | None = None,
         stop_reason: str | None = None,
     ) -> None:
+        content = redact_secrets(content)
         message = self.messages[index]
         merged_metadata = dict(message.metadata)
         if message.content and message.content != content:
@@ -450,6 +454,8 @@ class AgentSessionState:
         mutation_kind: str | None = None,
     ) -> None:
         message = self.messages[index]
+        if content is not None and message.role == 'tool':
+            content = redact_secrets(content)
         merged_metadata = dict(message.metadata)
         new_content = message.content if content is None else content
         new_state = message.state if state is None else state

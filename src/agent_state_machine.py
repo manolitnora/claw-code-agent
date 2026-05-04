@@ -559,11 +559,56 @@ _FORCE_PUSH_MAIN = _re.compile(
 )
 _SECRET_PATTERNS = (
     _re.compile(r'\bsk-(ant|proj|or|live|test)-[A-Za-z0-9_\-]{8,}'),
+    # Stripe uses underscores: sk_live_..., sk_test_..., rk_live_..., rk_test_...
+    _re.compile(r'\b(sk|rk|pk)_(live|test)_[A-Za-z0-9]{16,}'),
     _re.compile(r'\bghp_[A-Za-z0-9]{20,}'),
     _re.compile(r'\bAKIA[0-9A-Z]{16,}'),
     _re.compile(r'\bxoxb-[A-Za-z0-9\-]{20,}'),
+    # Google API keys: documented as AIza + 35 chars from [A-Za-z0-9_-]
+    _re.compile(r'\bAIza[A-Za-z0-9_\-]{35}\b'),
+    # JWT: three base64url segments separated by dots; first must start with
+    # eyJ (which is base64 for `{"`). Less false-positive-prone than `\beyJ`.
+    _re.compile(r'\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+'),
     _re.compile(r'-----BEGIN (RSA|OPENSSH|EC|DSA|PRIVATE) (PRIVATE )?KEY-----'),
 )
+
+
+def redact_secrets(text: str) -> str:
+    """Replace any token matching `_SECRET_PATTERNS` with `[REDACTED:<kind>]`.
+
+    Used at tool-result ingestion (`agent_session.append_tool` and friends) so
+    that a `Read` of an env file does not poison the entire message history
+    and trip the `never_commit_secrets` wall on every subsequent llm_call.
+    Wall and redactor share the same pattern table — single source of truth.
+    """
+    if not text:
+        return text
+    redacted = text
+    for pattern in _SECRET_PATTERNS:
+        redacted = pattern.sub(
+            lambda m: f'[REDACTED:{_secret_kind(m.group(0))}]', redacted
+        )
+    return redacted
+
+
+def _secret_kind(token: str) -> str:
+    if token.startswith('sk-'):
+        return token.split('-', 2)[1] if '-' in token[3:] else 'sk'
+    if token.startswith(('sk_', 'rk_', 'pk_')):
+        return 'stripe'
+    if token.startswith('ghp_'):
+        return 'github'
+    if token.startswith('AKIA'):
+        return 'aws'
+    if token.startswith('xoxb-'):
+        return 'slack'
+    if token.startswith('AIza'):
+        return 'google'
+    if token.startswith('eyJ'):
+        return 'jwt'
+    if token.startswith('-----BEGIN'):
+        return 'pem'
+    return 'secret'
 # rm -rf with a path that's clearly system or production root.
 _DESTROY_ROOT = _re.compile(
     r'\brm\s+(-r[fF]?|-fr|-rf)\s+/(?!tmp\b|var/tmp\b|home/[^/\s]+/(?:Downloads|Desktop|tmp))',
