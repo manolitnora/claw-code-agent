@@ -17,6 +17,7 @@ archive/
 .claude/
 .claude.json
 .claw/
+.latti/
 .port_sessions/
 
 # Environment files
